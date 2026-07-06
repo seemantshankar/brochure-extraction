@@ -1,0 +1,4 @@
+This image shows a technical line drawing with measurement callouts. Extract: view
+("front"/"rear"/"side"/"top", inferred from the drawing), and a list of
+{label, value, unit} for every numeric measurement shown. Return via the provided tool
+call only.

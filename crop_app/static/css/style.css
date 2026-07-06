@@ -1,0 +1,788 @@
+/* ====================================
+   1. GLOBAL / RESET
+   ==================================== */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg-primary: #1a1a2e;
+  --bg-secondary: #16213e;
+  --bg-surface: #0f3460;
+  --bg-surface-hover: #1a4a7a;
+  --text-primary: #e0e0e0;
+  --text-secondary: #a0a0b0;
+  --text-muted: #6c6c80;
+  --accent: #e94560;
+  --accent-hover: #ff6b81;
+  --border: #2a2a4a;
+  --border-active: #e94560;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  --transition: 0.2s ease;
+}
+
+html {
+  height: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+    Ubuntu, Cantarell, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.6;
+  min-height: 100%;
+}
+
+body.annotate-body {
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ====================================
+   2. UPLOAD PAGE
+   ==================================== */
+.app-container {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 60px 24px;
+}
+
+header {
+  text-align: center;
+  margin-bottom: 48px;
+}
+
+header h1 {
+  font-size: 2.2rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 8px;
+}
+
+.subtitle {
+  color: var(--text-secondary);
+  font-size: 1rem;
+}
+
+/* Drop zone */
+.drop-zone {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius-lg);
+  padding: 60px 24px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition);
+  background: var(--bg-secondary);
+}
+
+.drop-zone:hover,
+.drop-zone.drag-over {
+  border-color: var(--accent);
+  background: rgba(233, 69, 96, 0.05);
+}
+
+.drop-zone-icon {
+  font-size: 3rem;
+  margin-bottom: 16px;
+  opacity: 0.7;
+}
+
+.drop-zone-text {
+  font-size: 1.1rem;
+  margin-bottom: 8px;
+  color: var(--text-primary);
+}
+
+.drop-zone-hint {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+/* File preview list */
+.file-preview {
+  margin-top: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.file-preview .file-item {
+  background: var(--bg-surface);
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Submit button */
+#upload-form button[type="submit"] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 24px;
+  width: 100%;
+  padding: 14px 24px;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background var(--transition), opacity var(--transition);
+}
+
+#upload-form button[type="submit"]:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+#upload-form button[type="submit"]:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Spinner loader */
+.btn-loader {
+  display: none;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-loader:not([hidden]) {
+  display: inline-flex;
+}
+
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ====================================
+   3. PAGE GRID (Upload results)
+   ==================================== */
+#results-section {
+  margin-top: 48px;
+}
+
+#results-section h2 {
+  font-size: 1.4rem;
+  margin-bottom: 20px;
+  text-align: center;
+}
+
+.page-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 16px;
+}
+
+.page-grid .page-thumb {
+  position: relative;
+  background: var(--bg-secondary);
+  border-radius: var(--radius);
+  overflow: hidden;
+  aspect-ratio: 3 / 4;
+  cursor: pointer;
+  transition: transform var(--transition), box-shadow var(--transition);
+}
+
+.page-grid .page-thumb:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow);
+}
+
+.page-grid .page-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.page-card {
+  position: relative;
+  background: var(--bg-secondary);
+  border-radius: var(--radius);
+  overflow: hidden;
+  aspect-ratio: 3 / 4;
+  cursor: default;
+  transition: transform var(--transition), box-shadow var(--transition);
+}
+
+.page-card.page-complex {
+  cursor: pointer;
+}
+
+.page-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow);
+}
+
+.page-card img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 2px 8px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  border-radius: 4px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+}
+
+.badge.badge-complex {
+  background: var(--accent);
+  color: #fff;
+}
+
+.badge.badge-simple {
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+}
+
+/* ====================================
+   4. ANNOTATION LAYOUT
+   ==================================== */
+
+/* Topbar */
+.annotate-topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  height: 56px;
+}
+
+.back-link {
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  transition: color var(--transition);
+}
+
+.back-link:hover {
+  color: var(--text-primary);
+}
+
+.page-thumbs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  flex: 1;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.page-thumbs::-webkit-scrollbar {
+  height: 4px;
+}
+
+.page-thumbs::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.page-thumbs::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}
+
+.page-thumbs .thumb-item {
+  width: 40px;
+  height: 52px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 2px solid transparent;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity var(--transition), border-color var(--transition);
+}
+
+.page-thumbs .thumb-item:hover {
+  opacity: 0.85;
+}
+
+.page-thumbs .thumb-item.active {
+  border-color: var(--accent);
+  opacity: 1;
+}
+
+.page-thumbs .thumb-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Main layout */
+.annotate-main {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* Canvas container */
+.canvas-container {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background: #111;
+}
+
+.canvas-container canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ====================================
+   5. ZOOM CONTROLS
+   ==================================== */
+.zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.zoom-controls button {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-size: 1.1rem;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.zoom-controls button:hover {
+  background: var(--bg-surface-hover);
+  border-color: var(--text-muted);
+}
+
+#zoom-level {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  min-width: 44px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ====================================
+   6. CROP PANEL
+   ==================================== */
+.crop-panel {
+  width: 280px;
+  flex-shrink: 0;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.crop-panel h3 {
+  padding: 16px;
+  font-size: 1rem;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.crop-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.crop-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.crop-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.crop-list::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}
+
+.empty-hint {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  text-align: center;
+  padding: 24px 12px;
+}
+
+/* ====================================
+   7. CROP CARDS
+   ==================================== */
+.crop-card {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 8px;
+  background: var(--bg-primary);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  transition: border-color var(--transition), background var(--transition);
+}
+
+.crop-card:hover {
+  border-color: var(--text-muted);
+  background: var(--bg-surface);
+}
+
+.crop-card.committed {
+  cursor: pointer;
+}
+
+.crop-card.committed:hover {
+  border-color: var(--accent);
+}
+
+.crop-card .crop-thumb {
+  width: 120px;
+  height: 80px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #000;
+}
+
+.crop-card .crop-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.crop-card .crop-label {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Commit button */
+.commit-btn {
+  flex-shrink: 0;
+  margin: 12px 16px;
+  padding: 12px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background var(--transition), opacity var(--transition);
+}
+
+.commit-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.commit-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ====================================
+   8. MODAL (Trim)
+   ==================================== */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  display: none;
+}
+
+.modal-overlay:not([hidden]) {
+  display: flex;
+}
+
+.modal-content {
+  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  padding: 24px;
+  max-width: 90vw;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.modal-header h3 {
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 1.5rem;
+  cursor: pointer;
+  padding: 4px;
+  line-height: 1;
+  transition: color var(--transition);
+}
+
+.modal-close:hover {
+  color: var(--text-primary);
+}
+
+.trim-canvas-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.trim-canvas-container canvas {
+  max-width: 600px;
+  max-height: 400px;
+  border-radius: 4px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.modal-actions button {
+  padding: 10px 20px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.modal-actions button:hover {
+  background: var(--bg-surface-hover);
+  border-color: var(--text-muted);
+}
+
+.modal-actions .btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.modal-actions .btn-primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+/* ====================================
+   9. CURSOR CLASSES
+   ==================================== */
+.cursor-grab {
+  cursor: grab;
+}
+
+.cursor-grab:active {
+  cursor: grabbing;
+}
+
+.cursor-ns-resize {
+  cursor: ns-resize;
+}
+
+.cursor-ew-resize {
+  cursor: ew-resize;
+}
+
+.cursor-nwse-resize {
+  cursor: nwse-resize;
+}
+
+.cursor-nesw-resize {
+  cursor: nesw-resize;
+}
+
+.cursor-crosshair {
+  cursor: crosshair;
+}
+
+/* ====================================
+   11. TOASTS
+   ==================================== */
+.toast-container {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  padding: 10px 20px;
+  border-radius: var(--radius);
+  font-size: 0.9rem;
+  color: #fff;
+  background: #333;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  opacity: 1;
+  transition: opacity 0.3s ease;
+  pointer-events: auto;
+}
+
+.toast.success {
+  background: #2a9d5e;
+}
+
+.toast.error {
+  background: var(--accent);
+}
+
+.toast.info {
+  background: var(--bg-surface);
+}
+
+.toast.hiding {
+  opacity: 0;
+}
+
+/* ====================================
+   12. RESPONSIVE
+   ==================================== */
+@media (max-width: 768px) {
+  .app-container {
+    padding: 32px 16px;
+  }
+
+  header h1 {
+    font-size: 1.6rem;
+  }
+
+  .drop-zone {
+    padding: 40px 16px;
+  }
+
+  .page-grid {
+    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+    gap: 10px;
+  }
+
+  .annotate-topbar {
+    padding: 6px 10px;
+    height: 48px;
+  }
+
+  .crop-panel {
+    width: 220px;
+  }
+
+  .crop-card .crop-thumb {
+    width: 80px;
+    height: 56px;
+  }
+
+  .modal-content {
+    padding: 16px;
+    max-width: 95vw;
+  }
+
+  .trim-canvas-container canvas {
+    max-width: 90vw;
+    max-height: 50vh;
+  }
+}
+
+@media (max-width: 480px) {
+  .annotate-main {
+    flex-direction: column;
+  }
+
+  .crop-panel {
+    width: 100%;
+    height: 180px;
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+
+  .crop-list {
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .crop-card {
+    flex-shrink: 0;
+  }
+
+  .zoom-controls {
+    gap: 4px;
+  }
+
+  .zoom-controls button {
+    width: 28px;
+    height: 28px;
+    font-size: 0.9rem;
+  }
+}

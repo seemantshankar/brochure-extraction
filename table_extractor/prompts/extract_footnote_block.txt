@@ -1,0 +1,3 @@
+Extract the footnote/disclaimer text block verbatim as plain text, preserving each footnote
+marker (*, **, ***, ****, ^, ^^, ^##, #, ##, etc.) at the start of the sentence it introduces,
+as a list of {marker, text} objects. Return via the provided tool call only.

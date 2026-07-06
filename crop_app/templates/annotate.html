@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Annotate — Brochure Crop Tool</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body class="annotate-body">
+  <!-- Top bar: page thumbnails + zoom -->
+  <div class="annotate-topbar">
+    <a href="/" class="back-link">&larr; Back</a>
+    <div class="page-thumbs" id="page-thumbs"></div>
+    <div class="zoom-controls">
+      <button id="zoom-out-btn" title="Zoom out (−)">−</button>
+      <span id="zoom-level">100%</span>
+      <button id="zoom-in-btn" title="Zoom in (+)">+</button>
+    </div>
+  </div>
+
+  <!-- Main layout: canvas left, crop panel right -->
+  <div class="annotate-main">
+    <div class="canvas-container" id="canvas-container">
+      <canvas id="annotation-canvas"></canvas>
+    </div>
+    <div class="crop-panel" id="crop-panel">
+      <h3>Crops</h3>
+      <div id="crop-list" class="crop-list">
+        <p class="empty-hint">Draw bounding boxes to create crops</p>
+      </div>
+      <button id="commit-btn" disabled class="commit-btn">Commit All Crops</button>
+    </div>
+  </div>
+
+  <!-- Toast notifications -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Trim modal (hidden by default) -->
+  <div class="modal-overlay" id="trim-modal" hidden>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Trim Crop</h3>
+        <button class="modal-close" id="trim-modal-close">&times;</button>
+      </div>
+      <div class="trim-canvas-container">
+        <canvas id="trim-canvas"></canvas>
+      </div>
+      <div class="modal-actions">
+        <button id="trim-cancel-btn">Cancel</button>
+        <button id="trim-save-btn" class="btn-primary">Update Crop</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pass session/page data from Flask -->
+  <script>
+    window.APP_DATA = {
+      sessionId: "{{ session_id }}",
+      pageData: {{ page_data | tojson }},
+      allPages: {{ all_pages | tojson }}
+    };
+  </script>
+  <script src="/static/js/annotate.js"></script>
+</body>
+</html>

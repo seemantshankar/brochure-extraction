@@ -1,0 +1,5 @@
+This image is a feature list panel for one trim tier. Extract:
+- tier_name: the panel's own header, e.g. "HTX [In addition to HTK (O)]"
+- inherits_from: the tier name referenced in "[In addition to X]", or null if none
+- features: list of feature strings, one per bullet, verbatim including any footnote markers
+Return via the provided tool call only.

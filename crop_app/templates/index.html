@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Brochure Crop Tool</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <div class="app-container">
+    <header>
+      <h1>Brochure Crop Tool</h1>
+      <p class="subtitle">Upload a PDF or images. We'll analyze complexity. You crop.</p>
+    </header>
+
+    <form id="upload-form" action="/upload" method="post" enctype="multipart/form-data">
+      <div class="drop-zone" id="drop-zone">
+        <div class="drop-zone-icon">&#128196;</div>
+        <p class="drop-zone-text">Drag &amp; drop files here, or click to select</p>
+        <p class="drop-zone-hint">PDF, PNG, JPG — up to 200MB</p>
+        <input type="file" id="file-input" name="files" multiple accept=".pdf,.png,.jpg,.jpeg" hidden>
+      </div>
+      <div id="file-preview" class="file-preview"></div>
+      <button type="submit" id="submit-btn" disabled>
+        <span class="btn-text">Analyze Complexity</span>
+        <span class="btn-loader" hidden>
+          <span class="spinner"></span> Analyzing...
+        </span>
+      </button>
+    </form>
+
+    <div id="results-section" hidden>
+      <h2>Page Results</h2>
+      <div id="page-grid" class="page-grid"></div>
+    </div>
+  </div>
+
+  <script src="/static/js/upload.js"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+This image is a cropped table from a vehicle brochure. Extract it as structured data, not
+markdown. Return:
+- columns: list of column headers, preserving merged/grouped headers as nested objects
+  where applicable.
+- rows: list of rows; if the table has black section-divider rows (e.g. "SAFETY & SECURITY"),
+  include a "section" field on each row giving the most recent divider label, do not treat
+  the divider as its own row.
+- Preserve checkmarks as "yes", dashes as "no", and any other literal cell values exactly as
+  shown, including footnote markers (e.g. "**", "^^", "#") attached to values or headers.
+Return via the provided tool call only.

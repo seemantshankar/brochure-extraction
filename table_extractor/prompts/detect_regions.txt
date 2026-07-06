@@ -1,0 +1,23 @@
+You are analyzing a page from a vehicle brochure. Identify every distinct visual region:
+tables, sub-tables, bullet/feature panels, color swatch grids, stat/callout cards, technical
+line drawings, icon badges, footnote text blocks, and standalone section headings.
+
+For each region return:
+- label: short text describing the region, taken from its own header if it has one
+- region_type: one of [ruled_table, section_grouped_table, bullet_panel, swatch_grid,
+  stat_cards, technical_drawing, icon_badge, footnote_block, section_heading, other]
+- bbox: [x0, y0, x1, y1] normalized to a 0-1000 scale, tightest box that contains the region
+  including its header/label but excluding surrounding whitespace
+- may_contain_subregions: true if this region is itself a container of multiple distinct
+  sub-tables or sub-panels (e.g. a bordered zone containing several trim-tier panels side by
+  side), false if it is already a single atomic region
+
+Guidelines for region detection:
+1. Capture standalone/bare section headings (e.g., "Dimensions (in mm)") using `section_heading`.
+2. All returned bounding boxes must be non-overlapping. Ensure no bounding boxes overlap each other.
+3. Keep `stat_cards` complete as a single container, even when visual vertical dividers separate different card groups (e.g., CNG vs Petrol cards under the same heading must stay together in a single `stat_cards` container).
+4. Do not merge visually distinct panels into one region even if they share a border. Do not
+split a single ruled table into multiple regions just because it has section-divider rows —
+that is one region of type section_grouped_table.
+
+Return via the provided tool call only. No prose.

@@ -1,0 +1,2 @@
+Extract each stat card as: card_label (e.g. "WagonR Petrol 1L"), variant (e.g. "MT" or
+"AGS"), value, and unit. Return via the provided tool call only.

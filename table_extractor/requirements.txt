@@ -1,0 +1,6 @@
+openai>=1.0.0
+pillow>=10.0
+pydantic>=2.0
+pytest>=7.0
+pytest-mock>=3.6
+rapidocr-onnxruntime

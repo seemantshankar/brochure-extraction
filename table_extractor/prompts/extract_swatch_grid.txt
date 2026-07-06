@@ -1,0 +1,3 @@
+Extract each color swatch as: swatch_name (verbatim label), tone_type ("single" or "dual"),
+and for dual-tone entries, both component names (e.g. roof color, body color) separately.
+Return via the provided tool call only.

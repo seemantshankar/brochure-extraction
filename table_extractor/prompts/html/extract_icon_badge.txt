@@ -1,0 +1,1 @@
+Type: Icon Badge (warranty, certification, rating badges). Render as <div class="badge"><strong>Badge Name</strong>: value</div>. If the badge contains multiple fields (e.g., "5 Years Standard Warranty" with sub-text "or 1,00,000 km"), include all text within the <div>.

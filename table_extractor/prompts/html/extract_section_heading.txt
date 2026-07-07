@@ -1,0 +1,1 @@
+Type: Section Heading. Infer the heading level (<h1>, <h2>, <h3>) from the visual prominence and position of the text in the layout. Large, bold, prominent section titles use lower heading numbers. Return just the <hN>...</hN> element.

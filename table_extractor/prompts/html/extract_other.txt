@@ -1,0 +1,1 @@
+Type: General / Other. Extract as semantic HTML using the most appropriate elements: <p> for paragraphs, <ul>/<ol> for lists, <table> for any tabular content not clearly matched to the other types, <strong> for emphasized terms. Preserve all text exactly.

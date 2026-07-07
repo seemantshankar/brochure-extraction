@@ -363,9 +363,26 @@ document.addEventListener("DOMContentLoaded", () => {
     render();
   }
 
+  function updateExtractButton(boxes) {
+    var extractBtn = document.getElementById("extract-btn");
+    if (!extractBtn) return;
+    var hasCommitted = boxes.some(function (b) { return b.committed; });
+    var hasUncommitted = countUncommitted(boxes) > 0;
+    if (hasCommitted && !hasUncommitted) {
+      extractBtn.disabled = false;
+      extractBtn.title = "";
+    } else {
+      extractBtn.disabled = true;
+      extractBtn.title = hasUncommitted
+        ? "Commit your changes to enable HTML extraction."
+        : "Commit at least one crop region first.";
+    }
+  }
+
   function updateCropPanel(boxes) {
     const cropList = document.getElementById("crop-list");
     const commitBtn = document.getElementById("commit-btn");
+    updateExtractButton(boxes);
     cropList.innerHTML = "";
 
     const pending = countUncommitted(boxes);
@@ -640,6 +657,27 @@ document.addEventListener("DOMContentLoaded", () => {
       const pageIndex = parseInt(new URLSearchParams(window.location.search).get("page")) || 0;
       commitCrops(sessionId, pageIndex, state.boxes);
     });
+
+    var extractBtn = document.getElementById("extract-btn");
+    if (extractBtn) {
+      extractBtn.addEventListener("click", function () {
+        if (extractBtn.disabled) return;
+        fetch("/session/" + sessionId)
+          .then(function (r) { return r.json(); })
+          .then(function (meta) {
+            var hasDraft = (meta.pages || []).some(function (p) { return p.draft && p.draft.length > 0; });
+            if (hasDraft) {
+              showToast("You have uncommitted changes. Please commit first.", "error");
+              updateExtractButton(state.boxes);
+              return;
+            }
+            window.location = "/extract-html/" + sessionId;
+          })
+          .catch(function (err) {
+            showToast("Could not verify commit state.", "error");
+          });
+      });
+    }
 
     window.addEventListener("beforeunload", function (e) {
       const hasUncommitted = state.boxes.some(function (b) { return !b.committed; });

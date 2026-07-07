@@ -1,7 +1,12 @@
 import os
+import sys
+import json
 import shutil
+import logging
 import datetime
-from flask import Flask, request, jsonify, redirect, url_for, send_file, render_template
+from flask import Flask, request, jsonify, redirect, url_for, send_file, render_template, Response
+
+logger = logging.getLogger(__name__)
 from werkzeug.utils import secure_filename
 from session_manager import SessionManager
 from crop_manager import CropManager
@@ -403,6 +408,71 @@ def create_app():
         shutil.rmtree(crop_dir, ignore_errors=True)
 
         return jsonify({"ok": True})
+
+    @app.route("/extract-html/<session_id>", methods=["GET"])
+    def extract_html_page(session_id):
+        _sm = app.session_manager
+        if not _sm.session_exists(session_id):
+            return render_template("error.html", message="Session not found"), 400
+        meta = _sm.load_meta(session_id)
+        for page in meta.get("pages", []):
+            if page.get("draft") and len(page["draft"]) > 0:
+                return render_template("error.html", message="You have uncommitted changes. Please commit them before extracting HTML."), 400
+        if not any(page.get("crops") for page in meta.get("pages", [])):
+            return render_template("error.html", message="No crops have been committed. Please commit at least one crop region before extracting HTML."), 400
+        return render_template("extract_progress.html", session_id=session_id)
+
+    @app.route("/extract-progress/<session_id>", methods=["GET"])
+    def extract_progress_sse(session_id):
+        _sm = app.session_manager
+        if not _sm.session_exists(session_id):
+            return "Session not found", 404
+
+        def generate():
+            yield f"data: {json.dumps({'status': 'starting'})}\n\n"
+
+            sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+            from table_extractor.html_extractor import run_extraction
+
+            try:
+                for event in run_extraction(
+                    session_id=session_id,
+                    sm=_sm,
+                    crop_root=app.config["CROP_DIR"],
+                    model=os.environ.get("DATA_EXTRACTION_MODEL_ID", "qwen/qwen3.7-plus"),
+                ):
+                    if event["status"] == "done":
+                        result_html = event["html"]
+                        out_dir = os.path.join(
+                            os.path.dirname(os.path.abspath(__file__)),
+                            "static", "extracted", session_id,
+                        )
+                        os.makedirs(out_dir, exist_ok=True)
+                        out_path = os.path.join(out_dir, "extraction.html")
+                        with open(out_path, "w", encoding="utf-8") as f:
+                            f.write(result_html)
+
+                        yield f"data: {json.dumps({'status': 'done'})}\n\n"
+                    else:
+                        yield f"data: {json.dumps(event)}\n\n"
+
+            except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
+                logger.error("HTML extraction failed for session %s: %s\n%s", session_id, e, tb)
+                yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
+
+        return Response(generate(), mimetype="text/event-stream")
+
+    @app.route("/extracted/<session_id>/extraction.html", methods=["GET"])
+    def serve_extracted_html(session_id):
+        out_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "static", "extracted", session_id, "extraction.html",
+        )
+        if not os.path.exists(out_path):
+            return "Extraction not found. Please run extraction first.", 404
+        return send_file(out_path, mimetype="text/html")
 
     return app
 

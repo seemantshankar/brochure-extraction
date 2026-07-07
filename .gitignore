@@ -36,3 +36,6 @@ output_*/
 
 # Logs
 *.log
+
+# Generated HTML extractions
+crop_app/static/extracted/*.html

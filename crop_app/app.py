@@ -69,7 +69,7 @@ def create_app():
             all_pages=[
                 {
                     "index": i,
-                    "complex": p.get("classification"),
+                    "classification": p.get("classification"),
                     "path": p["path"],
                     "has_draft": "draft" in p,
                 }

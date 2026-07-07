@@ -1,0 +1,107 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #f1f5f9;
+  color: #1e293b;
+  line-height: 1.6;
+  display: flex;
+  min-height: 100vh;
+}
+
+.toc-sidebar {
+  position: fixed;
+  top: 0; left: 0;
+  width: 200px;
+  height: 100vh;
+  background: #fff;
+  border-right: 1px solid #e2e8f0;
+  padding: 20px 12px;
+  overflow-y: auto;
+  z-index: 100;
+}
+.toc-sidebar h3 {
+  font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;
+  color: #94a3b8; margin-bottom: 12px;
+}
+.toc-sidebar a {
+  display: block; padding: 6px 10px; font-size: 0.85rem;
+  color: #475569; text-decoration: none; border-radius: 4px; transition: background 0.15s;
+}
+.toc-sidebar a:hover { background: #f1f5f9; color: #1e293b; }
+.toc-sidebar a.active { background: #e2e8f0; font-weight: 600; }
+
+.document-canvas { margin-left: 200px; padding: 40px; flex: 1; min-width: 0; }
+
+.page {
+  background: #fff; border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
+  padding: 48px; margin-bottom: 32px; position: relative;
+}
+.page-label { font-size: 0.75rem; color: #94a3b8; text-align: center; margin-bottom: 24px; }
+.page-divider { border: none; border-top: 2px dashed #e2e8f0; margin: 0 0 32px; }
+
+h1, h2, h3, h4, h5, h6 { margin-bottom: 12px; color: #0f172a; }
+
+table { border-collapse: collapse; width: 100%; font-size: 13px; margin-bottom: 20px; }
+.table-scroll-wrap { overflow-x: auto; margin-bottom: 20px; scrollbar-width: thin; }
+.table-scroll-wrap::-webkit-scrollbar { height: 6px; }
+.table-scroll-wrap::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+.table-container { position: relative; }
+.copy-table-btn {
+  position: absolute; top: 4px; right: 4px; z-index: 10;
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 4px;
+  padding: 4px 8px; font-size: 0.75rem; color: #64748b; cursor: pointer;
+  opacity: 0; transition: opacity 0.2s;
+}
+.table-container:hover .copy-table-btn { opacity: 1; }
+.copy-table-btn:hover { background: #f8fafc; color: #1e293b; }
+
+th, td { border: 1px solid #d1d5db; padding: 6px 10px; text-align: left; vertical-align: top; }
+th { background: #f5f5f5; font-weight: 600; white-space: nowrap; }
+tr:hover td { background-color: #f8fafc; }
+tr.section-divider td { font-weight: 700; background: #eef2ff; color: #334155; }
+
+.footnotes, aside.footnotes {
+  font-size: 12px; color: #64748b; border-left: 3px solid #e2e8f0;
+  padding-left: 16px; margin-top: 24px;
+}
+.footnotes p { margin-bottom: 4px; }
+.footnotes .fn-flash { animation: fn-flash 1s ease-out; }
+
+a.footnote-ref { text-decoration: none; color: #6366f1; cursor: pointer; }
+a.footnote-ref:hover { text-decoration: underline; }
+a.footnote-back { text-decoration: none; color: #6366f1; margin-left: 4px; font-size: 0.85em; }
+
+dl { margin-bottom: 16px; }
+.stat-cards { display: flex; gap: 12px; flex-wrap: wrap; }
+.stat-card { border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px 16px; flex: 1; min-width: 140px; }
+.stat-card dt { font-weight: 600; color: #334155; font-size: 0.85rem; }
+.stat-card dd { color: #1e293b; font-size: 1.1rem; font-weight: 600; margin-top: 2px; }
+
+.badge { border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px 16px; display: inline-block; }
+
+ul, ol { margin-bottom: 16px; padding-left: 24px; }
+li { margin-bottom: 4px; }
+
+.footnote-tooltip {
+  position: absolute; background: #1e293b; color: #f8fafc;
+  padding: 6px 10px; border-radius: 4px; font-size: 12px;
+  max-width: 300px; z-index: 1000; pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+
+.error-region {
+  background: #fef2f2; border-left: 3px solid #ef4444;
+  padding: 12px 16px; color: #991b1b; margin-bottom: 12px;
+  border-radius: 0 4px 4px 0;
+}
+
+@keyframes fn-flash { 0% { background: #fef9c3; } 100% { background: transparent; } }
+.fn-flash { animation: fn-flash 1s ease-out; }
+
+@media (max-width: 768px) {
+  .toc-sidebar { width: 100%; height: auto; position: relative; border-right: none; border-bottom: 1px solid #e2e8f0; }
+  .document-canvas { margin-left: 0; padding: 16px; }
+  .page { padding: 24px; }
+}

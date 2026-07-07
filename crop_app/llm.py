@@ -102,9 +102,12 @@ def _parse_response(raw: str) -> dict:
     try:
         data = json.loads(text)
         if isinstance(data, dict):
-            classification = data.get("classification", "Complex")
+            classification = data.get("classification")
             if classification not in ("Simple", "Complex"):
-                classification = "Complex"
+                return {
+                    "classification": "Complex",
+                    "error": f"Invalid or missing classification field: {raw[:200]}",
+                }
             return {"classification": classification, "error": None}
     except (json.JSONDecodeError, AttributeError):
         pass

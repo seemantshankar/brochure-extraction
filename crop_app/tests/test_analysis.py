@@ -195,6 +195,54 @@ def test_missing_page_file_defaults_complex(app_with_session):
     assert data["pages"][0]["error"] == "Page file missing"
 
 
+def test_missing_page_file_classification_persists(app_with_session):
+    client, sid = app_with_session
+
+    app = client.application
+    sm = app.session_manager
+    meta = sm.load_meta(sid)
+    page_path = os.path.join(sm.get_page_dir(sid), meta["pages"][0]["path"])
+    os.remove(page_path)
+
+    resp = client.post(f"/analyze/{sid}")
+    assert resp.status_code == 200
+
+    # The mutation must be written to disk, not just reported in the response
+    # body. Otherwise the next /analyze call redoes the same check forever.
+    reloaded = sm.load_meta(sid)
+    assert reloaded["pages"][0]["classification"] == "Complex"
+    assert reloaded["pages"][0]["error"] == "Page file missing"
+
+
+def test_legacy_session_classification_normalized(tmp_path):
+    app = create_app()
+    app.config["TESTING"] = True
+    app.config["UPLOAD_DIR"] = str(tmp_path / "uploads")
+    app.config["CROP_DIR"] = str(tmp_path / "crops")
+    os.makedirs(app.config["UPLOAD_DIR"], exist_ok=True)
+    os.makedirs(app.config["CROP_DIR"], exist_ok=True)
+
+    from session_manager import SessionManager
+    sm = SessionManager(app.config["UPLOAD_DIR"], app.config["CROP_DIR"])
+    app.session_manager = sm
+
+    sid = sm.create_session()
+    sm.save_meta(sid, {
+        "pages": [
+            {"path": "p0.png", "complex": True, "labels": ["table"], "crops": []},
+            {"path": "p1.png", "complex": False, "labels": [], "crops": []},
+        ]
+    })
+
+    with app.test_client() as client:
+        resp = client.get(f"/session/{sid}")
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["pages"][0]["classification"] == "Complex"
+    assert data["pages"][1]["classification"] == "Simple"
+
+
 def test_analyze_skips_pages_with_existing_classification(app_with_session):
     client, sid = app_with_session
 

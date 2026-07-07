@@ -40,7 +40,7 @@ def test_parse_response_invalid_classification_defaults_complex():
     raw = '{"classification": "Unknown"}'
     result = _parse_response(raw)
     assert result["classification"] == "Complex"
-    assert result["error"] is None
+    assert result["error"] is not None
 
 
 def test_analyze_page_success(tmp_path):

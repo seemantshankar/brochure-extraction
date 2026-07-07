@@ -15,6 +15,19 @@ def format_datetime(unix_ts):
     return datetime.datetime.fromtimestamp(unix_ts).strftime("%b %d, %Y %H:%M")
 
 
+def normalize_classification(page):
+    """Return a page's classification, falling back to the legacy
+    `complex`/`labels` contract so sessions created before the
+    `classification` field existed still render correctly (Complex/Simple)
+    instead of as a non-clickable "Pending"."""
+    cls = page.get("classification")
+    if cls is not None:
+        return cls
+    if "complex" in page:
+        return "Complex" if page.get("complex") else "Simple"
+    return None
+
+
 def create_app():
     app = Flask(__name__)
     app.jinja_env.filters["datetime"] = format_datetime
@@ -69,7 +82,7 @@ def create_app():
             all_pages=[
                 {
                     "index": i,
-                    "classification": p.get("classification"),
+                    "classification": normalize_classification(p),
                     "path": p["path"],
                     "has_draft": "draft" in p,
                 }
@@ -158,6 +171,7 @@ def create_app():
             if not os.path.exists(page_path):
                 page_info["classification"] = "Complex"
                 page_info["error"] = "Page file missing"
+                updated = True
                 continue
 
             result = analyze_page(page_path)
@@ -185,7 +199,11 @@ def create_app():
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return jsonify({"error": "Session not found"}), 404
-        return jsonify(_sm.load_meta(session_id))
+        meta = _sm.load_meta(session_id)
+        for page in meta.get("pages", []):
+            if page.get("classification") is None:
+                page["classification"] = normalize_classification(page)
+        return jsonify(meta)
 
     @app.route("/pages/<session_id>/<filename>", methods=["GET"])
     def serve_page(session_id, filename):

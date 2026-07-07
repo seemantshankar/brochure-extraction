@@ -28,7 +28,7 @@ Classify as "Simple" only when BOTH of the following condition groups are met:
 
 Positive Indicators — at least ONE must be true:
 1. The page only contains images with no text (0% text).
-2. The page contains less than 60% text overall.
+2. The page contains less than 60% text overall (e.g., a hero photo plus a short paragraph, or an image grid with short captions).
 3. The page contains simple tables (no sub-sections, no row/column spans, no merges) with less than 60% text overall.
 4. All text on the page is bold/large-font (approximately >18pt and high weight).
 

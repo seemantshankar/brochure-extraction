@@ -162,14 +162,21 @@ Two-phase process:
 
 *Phase 1 — Collection:* After all region fragments for a page are assembled, scan all HTML for:
 - Superscript markers: `<sup>*</sup>`, `<sup>**</sup>`, `<sup>†</sup>`, `<sup>1</sup>`, etc.
-- The `footnote_block` region content (identified by the `<aside class="footnotes">` wrapper the LLM produces based on the footnote_block hint).
+- The `footnote_block` region content — identified by a `class="footnotes"` attribute or similar (the assembler searches for common wrappers the LLM may produce: `<aside>`, `<div>`, `<ol>`, etc.).
 
 *Phase 2 — Linking:* If a `footnote_block` exists on the page:
 - Parse each footnote entry and extract its leading marker.
-- For each `<sup>marker</sup>` found in other regions on the same page, wrap them as links: `<a href="#fn-X" class="footnote-ref"><sup>marker</sup></a>`.
-- In the footnote `<aside>`, wrap each entry with an `id`: `<p id="fn-X"><sup>marker</sup> Footnote text...</p>`.
+- For each `<sup>marker</sup>` found in other regions on the same page, wrap them as interactive references: `<a href="#fn-X" class="footnote-ref" data-footnote="marker text"><sup>marker</sup></a>`. The `data-footnote` attribute stores the footnote text so the client-side JS can show it in a hover tooltip without DOM lookups.
+- In the footnote block, wrap each entry with an `id` and a back-link: `<p id="fn-X"><sup>marker</sup> Footnote text… <a href="#src-fn-X" class="footnote-back">↩</a></p>`.
+- Duplicate footnote reference links on the same page point to the same anchor target cleanly.
 - If no `footnote_block` exists but footnotes are inline (e.g., `*Note: ...` within a table), they remain as-is — markers are already preserved via `<sup>` tags.
 
+*Phase 3 — Client-Side Interactivity (embedded JS):*
+- **Hover**: On hover over `.footnote-ref`, show a positioned tooltip with the text from `data-footnote`.
+- **Click**: On click, smooth-scroll to `#fn-X` and trigger a CSS `@keyframes flash` animation on the target (background `#fef9c3` → transparent over 1s). The tooltip is suppressed during/after click.
+- **Back-link**: Click on `.footnote-back` scrolls back to the calling `.footnote-ref` anchor and briefly flashes it.
+
+**Footnote Resolution Scope:**
 Footnote resolution operates within a single page only. Cross-page footnotes are out of scope.
 
 ## Flask Integration & User Workflow
@@ -217,13 +224,19 @@ Button DISABLED <->  NO crops committed  OR  draft.length > 0 (uncommitted chang
 **Step 1 — Extraction Page** (`templates/extract_progress.html`):
 - Browser navigates to `/extract-html/<session_id>`.
 - Page shows session name, page count, and crop count.
-- Real-time progress via Server-Sent Events (SSE): "Processing Page 2 of 8... Crop 3 of 4".
+- Real-time progress via Server-Sent Events (SSE): animated progress gauge/bar transitions smoothly.
+- **Live action log ticker** below the progress bar — timestamped lines scroll in as SSE events arrive:
+  ```
+  [11:02:14] Loading crop segments for Page 3...
+  [11:02:15] Extracting ruled_table on Page 3 (Crop 2 of 4)...
+  ```
 - On completion, auto-redirects to the result page.
 
 **Step 2 — Result Page** (`templates/extract_result.html`):
-- Extraction summary (page count, crops processed, errors if any).
-- "Open HTML" button opens `/static/extracted/<session_id>/extraction.html` in a new browser tab.
-- "Back to Annotation" button returns to `/annotate/<session_id>`.
+- Animated success checkmark on completion.
+- **Extraction Metrics Card**: processing time, page count, crops processed, errors (if any).
+- Primary CTA: "Open HTML Document" (opens `/static/extracted/<session_id>/extraction.html` in a **new browser tab**, prominent brand color button).
+- Secondary actions: "Back to Annotations", "Download HTML".
 
 **Step 3 — HTML Output** (`static/extracted/<session_id>/extraction.html`):
 - Self-contained HTML file with embedded CSS.
@@ -242,13 +255,64 @@ Flask uses SSE (`text/event-stream`) to push page-level progress to the progress
 
 ### CSS Styling (embedded in output HTML)
 
-- System font stack (sans-serif, ~14px body)
-- Tables: border-collapse, single-pixel grey borders, header row slightly shaded (#f5f5f5)
-- Page divider: subtle light-grey horizontal rule with dashed style
-- Page label: small muted text ("Page 1 of 8") centered above each page
-- Footnote aside: smaller font (12px), left-border accent
-- Stat card dl: grid layout with term/value pairs
-- Error blocks: light red background with warning icon
+The output HTML is a premium, interactive document reader. All styling is embedded in the HTML file.
+
+**Document-Viewer Layout:**
+- Each page renders as a "sheet": white background (`#fff`), rounded corners (`border-radius: 8px`), subtle card shadow, centered on a light-grey canvas background (`#f1f5f9`).
+- Fixed/sticky **Sidebar Table of Contents (TOC)** on the left — lists all pages (e.g., `Page 1`, `Page 2`, ... `Page N`) with click-to-scroll navigation via anchor links.
+- Two-column layout: TOC (left, ~200px, collapsible on small screens) + document canvas (right, scrollable).
+
+**Typography:**
+- Inter font stack via `font-family: 'Inter', system-ui, -apple-system, sans-serif`.
+- Body: ~14px, line-height 1.6.
+- Table font: 13px. Footnotes: 12px.
+
+**Interactive Tables:**
+- `border-collapse`, single-pixel grey borders, header row slightly shaded (`#f5f5f5`).
+- Row hover effect: `tr:hover { background-color: #f8fafc; }` for scanning wide tables.
+- Floating "Copy Table" button in top-right corner of each table on hover — clicks copy the clean HTML table or CSV format to the clipboard via client-side JS.
+- Responsive container: `overflow-x: auto` with custom-styled scrollbar so tables scroll horizontally instead of breaking layout on small viewports.
+- Section divider rows styled distinctly (bold, shaded background).
+
+**Smart Footnotes:**
+- Superscript markers (`<sup>*</sup>`) in body text are clickable/hoverable.
+- **Hover**: A small absolute-positioned tooltip appears with the corresponding footnote text.
+- **Click**: Smooth-scrolls to the footnote block at the bottom of the page, and triggers a CSS animation that **flashes the footnote highlight** (background light yellow `#fef9c3` for 1 second via `@keyframes flash`).
+- A back-link indicator next to the footnote text returns to the caller's position.
+
+**Page Divider & Label:**
+- Page divider: subtle light-grey dashed horizontal rule between sheets.
+- Page label: small muted text (`Page 1 of N`) centered above each page sheet.
+
+**Stat Card `<dl>`:** Grid layout with term/value pairs, each card in a subtle bordered box.
+
+**Error Blocks:** Light red background (`#fef2f2`), left red border, warning text.
+
+**Client-Side JS (embedded in output HTML):**
+- Tooltip positioning for footnote hover.
+- Copy-table button visibility toggle + clipboard logic.
+- Flash animation trigger on footnote click.
+
+### CSS Styling for Process Pages
+
+These apply to the Flask app pages (`extract_progress.html`, `extract_result.html`), not the generated HTML.
+
+**Progress Page (`extract_progress.html`):**
+- Animated circular progress gauge or modern linear progress bar with smooth transitions.
+- Live action log ticker below the progress bar:
+  ```
+  [11:02:14] Loading crop segments for Page 3...
+  [11:02:15] Extracting ruled_table on Page 3 (Crop 2 of 4)...
+  ```
+- Timestamped log lines scroll in as SSE events arrive.
+- Visual state: idle → extracting (pulsing progress) → complete (checkmark) or error (red X).
+
+**Result Page (`extract_result.html`):**
+- Animated success checkmark on completion.
+- **Extraction Metrics Card**: processing time, page count, crops processed, errors (if any).
+- Primary CTA: "Open HTML Document" (opens in new tab, brand color button).
+- Secondary actions: "Back to Annotations", "Download HTML".
+- Button hierarchy: primary actions are visually prominent, secondary actions are subdued.
 
 ## Caching
 

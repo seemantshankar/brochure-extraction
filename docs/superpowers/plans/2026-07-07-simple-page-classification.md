@@ -10,17 +10,20 @@
 
 ## Global Constraints
 
-- Page classified as "Simple" when ALL criteria are met:
-  1. Page only contains image with no text, OR
-  2. Page contains less than 60% text, OR
-  3. Page contains simple tables with no sub-sections/row/column spans having less than 60% text overall, OR
-  4. All text on page is bold, higher weights, larger than 18 pts, OR
-  5. Can be easily scanned by small/cheap vision LLM with confidence, OR
-  6. Does not contain too many/complex symbols (e.g., ^^#, **#, ^^^, etc.)
+- Page classified as "Simple" when BOTH conditions are satisfied:
+  - **Positive Indicators (at least one must be true):**
+    1. The page only contains images with no text (0% text)
+    2. The page contains less than 60% text overall
+    3. The page contains simple tables (no sub-sections, row/column spans, or merges) AND has less than 60% text overall
+    4. All text on the page is bold/large (approximately >18pt and high weight)
+  - **Negative/General Constraints (both must be true):**
+    5. The page does not contain too many or complex symbols (e.g., ^^#, **#, ^^^, etc.)
+    6. The page can be easily and confidently scanned by a small/cheap vision LLM
 - Response format: minimal - just `classification` value
-- Confidence-based: only return "Simple" when confidently scannable; otherwise "Complex"
+- Confidence-based: only return "Simple" when all constraints are confidently met; otherwise "Complex"
 - Simple pages remain at 150 DPI; Complex pages upgrade to 300 DPI
-- Frontend shows all pages with Simple/Complex markers
+- Frontend shows all pages with Simple/Complex markers; null classification before analysis shows "Pending" badge
+- Default on error/parse-failure: classify as "Complex"
 
 ---
 
@@ -105,15 +108,19 @@ Expected: FAIL with "classification" key not found
 ANALYSIS_PROMPT = """You are analyzing a single page of a product brochure / spec sheet.
 Your job is to determine whether the page is "Simple" or "Complex" for processing by a small and cheap vision LLM.
 
-Classify as "Simple" when ALL of the following criteria are met:
-1. The page only contains an image with no text, OR
-2. The page contains less than 60% text, OR
-3. The page contains simple tables with no sub-sections, row/column spans/merges having less than 60% text overall, OR
-4. All text on page is bold, of higher weights, larger than 18 pts (approximately), OR
-5. Can be easily scanned by a small and cheap vision LLM with confidence, OR
-6. Does not contain too many or complex symbols (e.g., ^^#, **#, ^^^, etc.)
+Classify as "Simple" only when BOTH of the following condition groups are met:
 
-If you cannot confidently classify as "Simple", classify as "Complex".
+Positive Indicators — at least ONE must be true:
+1. The page only contains images with no text (0% text).
+2. The page contains less than 60% text overall.
+3. The page contains simple tables (no sub-sections, no row/column spans, no merges) with less than 60% text overall.
+4. All text on the page is bold/large-font (approximately >18pt and high weight).
+
+Negative / General Constraints — BOTH must be true:
+5. The page does NOT contain too many or complex symbols (e.g., ^^#, **#, ^^^, etc.).
+6. The page can be easily and confidently scanned by a small/cheap vision LLM.
+
+If you cannot confidently satisfy both groups, classify as "Complex".
 
 Respond with ONLY valid JSON in this exact format:
 {
@@ -152,7 +159,17 @@ def _parse_response(raw: str) -> dict:
     return {"classification": "Complex", "error": f"Failed to parse: {raw[:200]}"}
 ```
 
-- [ ] **Step 6: Update analyze_page return type**
+- [ ] **Step 5: Update analyze_page exception fallback**
+
+The `except` block in `analyze_page` at line 95 currently returns `{"complex": False, "labels": [], "error": str(e)}`.
+Update it to:
+
+```python
+    except Exception as e:
+        return {"classification": "Complex", "error": str(e)}
+```
+
+- [ ] **Step 6: Update analyze_page docstring**
 
 ```python
 def analyze_page(image_path: str) -> dict:
@@ -160,11 +177,9 @@ def analyze_page(image_path: str) -> dict:
 
     Returns: {"classification": "Simple" | "Complex", "error": str|None}
     """
-    # ... existing try block ...
-    # Just change the return call:
-    return _parse_response(raw_content)
-    # ... except block returns {"classification": "Complex", "error": str(e)}
 ```
+
+The `return _parse_response(raw_content)` call in the happy path remains unchanged.
 
 - [ ] **Step 7: Run tests to verify they pass**
 
@@ -211,12 +226,42 @@ def test_analyze_endpoint_returns_classification(app_with_session):
 Run: `pytest crop_app/tests/test_analysis.py::test_analyze_endpoint_returns_classification -v`
 Expected: FAIL - classification key not found
 
-- [ ] **Step 3: Update analyze_session in app.py**
+- [ ] **Step 3: Update analyze_session in app.py with ALL required changes**
 
-Update the function to store `classification` instead of `complex`:
+Replace all references to `complex` and `labels` with `classification`:
 
+**Line 72-73** (annotate_page route — maps page data to template):
 ```python
-# In analyze_session function, replace:
+# Replace:
+"complex": p["complex"],
+"labels": p["labels"],
+
+# With:
+"classification": p["classification"],
+```
+
+**Line 156** (analyze_session — skip already-analyzed pages):
+```python
+# Replace:
+if page_info["complex"] is not None:
+
+# With:
+if page_info.get("classification") is not None:
+```
+
+**Line 161-162** (analyze_session — missing file fallback):
+```python
+# Replace:
+page_info["complex"] = False
+page_info["labels"] = []
+
+# With:
+page_info["classification"] = "Complex"
+```
+
+**Line 167-168** (analyze_session — store analysis result):
+```python
+# Replace:
 page_info["complex"] = result["complex"]
 page_info["labels"] = result["labels"]
 
@@ -224,8 +269,16 @@ page_info["labels"] = result["labels"]
 page_info["classification"] = result["classification"]
 ```
 
-And update the metadata schema in upload():
+**Line 172** (analyze_session — PDF upgrade trigger):
+```python
+# Replace:
+if result["complex"] and page_info.get("pdf_path") and page_info.get("pdf_page") is not None:
 
+# With:
+if result["classification"] == "Complex" and page_info.get("pdf_path") and page_info.get("pdf_page") is not None:
+```
+
+**Upload route** (lines 111, 128 — metadata schema for new pages):
 ```python
 # Replace:
 "complex": None,
@@ -235,22 +288,12 @@ And update the metadata schema in upload():
 "classification": None,
 ```
 
-- [ ] **Step 4: Update PDF upgrade logic**
-
-```python
-# Replace:
-if result["complex"] and page_info.get("pdf_path") ...
-
-# With:
-if result["classification"] == "Complex" and page_info.get("pdf_path") ...
-```
-
-- [ ] **Step 6: Run tests to verify they pass**
+- [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest crop_app/tests/test_analysis.py -v`
 Expected: All tests PASS
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add crop_app/app.py crop_app/tests/test_analysis.py
@@ -271,28 +314,60 @@ git commit -m "feat: update app to use classification field"
 
 - [ ] **Step 1: Update upload.js badge logic**
 
+Replace the badge logic at `upload.js:153-163` to handle all three states (null/Complex/Simple):
+
 ```javascript
 // Replace:
 if (page.complex === true) {
   badge.classList.add("badge-complex");
+  badge.textContent = "Complex";
   card.classList.add("page-complex");
+  card.addEventListener("click", () => {
+    window.location = `/annotate/${sessionId}?page=${index}`;
+  });
+} else {
+  badge.classList.add("badge-simple");
+  badge.textContent = "Simple";
 }
 
 // With:
 if (page.classification === "Complex") {
   badge.classList.add("badge-complex");
+  badge.textContent = "Complex";
   card.classList.add("page-complex");
+  card.addEventListener("click", () => {
+    window.location = `/annotate/${sessionId}?page=${index}`;
+  });
 } else if (page.classification === "Simple") {
   badge.classList.add("badge-simple");
-  card.classList.add("page-simple");
+  badge.textContent = "Simple";
+} else {
+  // classification is null — analysis not yet run
+  badge.classList.add("badge-pending");
+  badge.textContent = "Pending";
 }
 ```
 
-- [ ] **Step 2: Review and update CSS classes**
+- [ ] **Step 2: Add CSS classes for Simple and Pending badges**
 
-No changes needed to `style.css` - existing `.badge-complex` and `.page-complex` classes should work. Optionally add `.badge-simple` and `.page-simple` if needed.
+```css
+/* Add to crop_app/static/css/style.css */
+.badge.badge-simple {
+  background: #e6f4ea;
+  color: #1e7e34;
+}
 
-- [ ] **Step 4: Commit**
+.badge.badge-pending {
+  background: #f0f0f0;
+  color: #666;
+}
+
+.page-card.page-simple {
+  border-left: 3px solid #1e7e34;
+}
+```
+
+- [ ] **Step 3: Commit**
 
 ```bash
 git add crop_app/static/js/upload.js crop_app/static/css/style.css
@@ -307,23 +382,104 @@ git commit -m "feat: update frontend for Simple/Complex classification"
 - Modify: `crop_app/tests/test_app.py`
 - Modify: `crop_app/tests/test_crop_routes.py`
 - Modify: `crop_app/tests/test_session_manager.py`
+- Modify: `crop_app/tests/test_analysis.py`
 
-- [ ] **Step 1: Update test_app.py**
+- [ ] **Step 1: Update test_analysis.py existing tests**
+
+Replace all existing test assertions on `complex` and `labels` with `classification`:
+
+**test_analyze_endpoint_returns_updated_meta** (line 94-100):
+```python
+# Replace:
+mock_result = {"complex": True, "labels": ["table"], "error": None}
+# ...
+assert data["pages"][0]["complex"] is True
+assert "table" in data["pages"][0]["labels"]
+
+# With:
+mock_result = {"classification": "Complex", "error": None}
+# ...
+assert data["pages"][0]["classification"] == "Complex"
+```
+
+**test_complex_non_pdf_page_does_not_trigger_upgrade** (line 129-136):
+```python
+# Replace:
+mock_result = {"complex": True, "labels": ["table"], "error": None}
+# ...
+assert data["pages"][0]["complex"] is True
+
+# With:
+mock_result = {"classification": "Complex", "error": None}
+# ...
+assert data["pages"][0]["classification"] == "Complex"
+```
+
+**test_simple_pdf_page_does_not_trigger_upgrade** (line 143-150):
+```python
+# Replace:
+mock_result = {"complex": False, "labels": [], "error": None}
+# ...
+assert data["pages"][0]["complex"] is False
+
+# With:
+mock_result = {"classification": "Simple", "error": None}
+# ...
+assert data["pages"][0]["classification"] == "Simple"
+```
+
+**test_complex_pdf_page_triggers_upgrade** (line 156-167):
+```python
+# Replace:
+mock_result = {"complex": True, "labels": ["table"], "error": None}
+# ...
+assert data["pages"][0]["complex"] is True
+
+# With:
+mock_result = {"classification": "Complex", "error": None}
+# ...
+assert data["pages"][0]["classification"] == "Complex"
+```
+
+**test_upgrade_failure_records_error** (line 174-180):
+```python
+# Replace:
+mock_result = {"complex": True, "labels": ["table"], "error": None}
+# ...
+assert data["pages"][0]["complex"] is True
+
+# With:
+mock_result = {"classification": "Complex", "error": None}
+# ...
+assert data["pages"][0]["classification"] == "Complex"
+```
+
+**Fixture data** (lines 33-34, 79-80 — page metadata in app_with_session and app_with_pdf_session):
+```python
+# Replace:
+"complex": None,
+"labels": [],
+
+# With:
+"classification": None,
+```
+
+- [ ] **Step 2: Update test_app.py**
 
 Replace `"complex": True` with `"classification": "Complex"` and `"complex": False` with `"classification": "Simple"` in test fixtures.
 
-- [ ] **Step 2: Update test_crop_routes.py**
+- [ ] **Step 3: Update test_crop_routes.py**
 
 Replace `"complex": True, "labels": ["table"]` with `"classification": "Complex"`.
 
-- [ ] **Step 3: Update test_session_manager.py**
+- [ ] **Step 4: Update test_session_manager.py**
 
 Replace `"complex": True, "labels": ["table"]` with `"classification": "Complex"`.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add crop_app/tests/test_app.py crop_app/tests/test_crop_routes.py crop_app/tests/test_session_manager.py
+git add crop_app/tests/test_app.py crop_app/tests/test_crop_routes.py crop_app/tests/test_session_manager.py crop_app/tests/test_analysis.py
 git commit -m "test: update test data to use classification field"
 ```
 

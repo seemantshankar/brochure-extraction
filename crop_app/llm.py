@@ -22,41 +22,35 @@ def _get_client():
 MODEL_ID = os.environ.get("PAGE_ANALYSIS_MODEL_ID", "openai/gpt-4o-mini")
 
 ANALYSIS_PROMPT = """You are analyzing a single page of a product brochure / spec sheet.
-Your job is to determine whether the page contains **complex layout regions** that need manual cropping.
+Your job is to determine whether the page is "Simple" or "Complex" for processing by a small and cheap vision LLM.
 
-Complex layout regions include (but are not limited to):
-- Tables (ruled, grid-based, data tables)
-- Swatch grids (color/ fabric/ material swatches arranged in a grid)
-- Image grids (product photos arranged in a grid)
-- Text grids (spec lists, bullet panels, feature lists)
-- Feature matrices (comparison tables with icons/labels)
-- Stat cards (KPI boxes, metric callouts)
-- Technical drawings / diagrams
+Classify as "Simple" only when BOTH of the following condition groups are met:
 
-A page is "complex" if it contains at least one of these layout types.
-A page is "not complex" if it is only body text, headings, footnotes, or full-bleed images with no grid/table structure.
+Positive Indicators — at least ONE must be true:
+1. The page only contains images with no text (0% text).
+2. The page contains less than 60% text overall (e.g., a hero photo plus a short paragraph, or an image grid with short captions).
+3. The page contains simple tables (no sub-sections, no row/column spans, no merges) with less than 60% text overall.
+4. All text on the page is bold/large-font (approximately >18pt and high weight).
+
+Negative / General Constraints — BOTH must be true:
+5. The page does NOT contain too many or complex symbols (e.g., ^^#, **#, ^^^, etc.).
+6. The page can be easily and confidently scanned by a small/cheap vision LLM.
+
+If you cannot confidently satisfy both groups, classify as "Complex".
 
 Respond with ONLY valid JSON in this exact format:
 {
-  "complex": true or false,
-  "labels": ["list", "of", "detected", "types"]
+  "classification": "Simple" or "Complex"
 }
 
-If complex is false, labels should be an empty list.
 Do NOT include any other text, explanation, or markdown formatting outside the JSON.
 """
 
-LABELS = [
-    "table", "ruled_table", "swatch_grid", "image_grid",
-    "text_grid", "feature_matrix", "stat_cards",
-    "technical_drawing", "bullet_panel"
-]
-
 
 def analyze_page(image_path: str) -> dict:
-    """Send a page image to the LLM and return complexity analysis.
+    """Send a page image to the LLM and return classification.
 
-    Returns: {"complex": bool, "labels": list[str], "error": str|None}
+    Returns: {"classification": "Simple" | "Complex", "error": str|None}
     """
     try:
         img = Image.open(image_path)
@@ -92,17 +86,15 @@ def analyze_page(image_path: str) -> dict:
         return _parse_response(raw_content)
 
     except Exception as e:
-        return {"complex": False, "labels": [], "error": str(e)}
+        return {"classification": "Complex", "error": str(e)}
 
 
 def _parse_response(raw: str) -> dict:
     """Parse LLM JSON response, stripping markdown fences if present."""
     text = raw.strip()
 
-    # Strip markdown code fences
     if text.startswith("```"):
         lines = text.split("\n")
-        # Remove first and last lines (fences)
         start = 1
         end = len(lines) - 1 if lines[-1].strip().startswith("```") else len(lines)
         text = "\n".join(lines[start:end]).strip()
@@ -110,15 +102,17 @@ def _parse_response(raw: str) -> dict:
     try:
         data = json.loads(text)
         if isinstance(data, dict):
-            return {
-                "complex": bool(data.get("complex", False)),
-                "labels": [lbl for lbl in data.get("labels", []) if lbl in LABELS],
-                "error": None,
-            }
+            classification = data.get("classification")
+            if classification not in ("Simple", "Complex"):
+                return {
+                    "classification": "Complex",
+                    "error": f"Invalid or missing classification field: {raw[:200]}",
+                }
+            return {"classification": classification, "error": None}
     except (json.JSONDecodeError, AttributeError):
         pass
 
-    return {"complex": False, "labels": [], "error": f"Failed to parse: {raw[:200]}"}
+    return {"classification": "Complex", "error": f"Failed to parse: {raw[:200]}"}
 
 
 def analyze_pages(page_paths: list[str]) -> list[dict]:

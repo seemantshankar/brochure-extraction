@@ -30,8 +30,7 @@ def app_with_session(tmp_path):
     sm.save_meta(sid, {
         "pages": [{
             "path": "page_000.png",
-            "complex": None,
-            "labels": [],
+            "classification": None,
             "crops": [],
             "pdf_path": None,
             "pdf_page": None,
@@ -76,8 +75,7 @@ def app_with_pdf_session(tmp_path):
     sm.save_meta(sid, {
         "pages": [{
             "path": "page_000.png",
-            "complex": None,
-            "labels": [],
+            "classification": None,
             "crops": [],
             "pdf_path": os.path.relpath(pdf_path, session_dir),
             "pdf_page": 0,
@@ -91,14 +89,13 @@ def app_with_pdf_session(tmp_path):
 def test_analyze_endpoint_returns_updated_meta(app_with_session):
     client, sid = app_with_session
 
-    mock_result = {"complex": True, "labels": ["table"], "error": None}
+    mock_result = {"classification": "Complex", "error": None}
     with patch("app.analyze_page", return_value=mock_result):
         resp = client.post(f"/analyze/{sid}")
 
     assert resp.status_code == 200
     data = resp.get_json()
-    assert data["pages"][0]["complex"] is True
-    assert "table" in data["pages"][0]["labels"]
+    assert data["pages"][0]["classification"] == "Complex"
 
 
 def test_analyze_invalid_session(app_with_session):
@@ -126,34 +123,34 @@ def test_get_session_meta(app_with_session):
 def test_complex_non_pdf_page_does_not_trigger_upgrade(app_with_session):
     client, sid = app_with_session
 
-    mock_result = {"complex": True, "labels": ["table"], "error": None}
+    mock_result = {"classification": "Complex", "error": None}
     with patch("app.analyze_page", return_value=mock_result), \
          patch("app.upgrade_page_to_hires") as mock_upgrade:
         resp = client.post(f"/analyze/{sid}")
 
     mock_upgrade.assert_not_called()
     data = resp.get_json()
-    assert data["pages"][0]["complex"] is True
+    assert data["pages"][0]["classification"] == "Complex"
     assert "upgraded" not in data["pages"][0]
 
 
 def test_simple_pdf_page_does_not_trigger_upgrade(app_with_pdf_session):
     client, sid = app_with_pdf_session
 
-    mock_result = {"complex": False, "labels": [], "error": None}
+    mock_result = {"classification": "Simple", "error": None}
     with patch("app.analyze_page", return_value=mock_result), \
          patch("app.upgrade_page_to_hires") as mock_upgrade:
         resp = client.post(f"/analyze/{sid}")
 
     mock_upgrade.assert_not_called()
     data = resp.get_json()
-    assert data["pages"][0]["complex"] is False
+    assert data["pages"][0]["classification"] == "Simple"
 
 
 def test_complex_pdf_page_triggers_upgrade(app_with_pdf_session):
     client, sid = app_with_pdf_session
 
-    mock_result = {"complex": True, "labels": ["table"], "error": None}
+    mock_result = {"classification": "Complex", "error": None}
     with patch("app.analyze_page", return_value=mock_result), \
          patch("app.upgrade_page_to_hires") as mock_upgrade:
         mock_upgrade.return_value = "/fake/page_000.png"
@@ -164,18 +161,101 @@ def test_complex_pdf_page_triggers_upgrade(app_with_pdf_session):
     assert call_args[0][2] == 0
 
     data = resp.get_json()
-    assert data["pages"][0]["complex"] is True
+    assert data["pages"][0]["classification"] == "Complex"
     assert data["pages"][0]["upgraded"] is True
 
 
 def test_upgrade_failure_records_error(app_with_pdf_session):
     client, sid = app_with_pdf_session
 
-    mock_result = {"complex": True, "labels": ["table"], "error": None}
+    mock_result = {"classification": "Complex", "error": None}
     with patch("app.analyze_page", return_value=mock_result), \
          patch("app.upgrade_page_to_hires", side_effect=RuntimeError("poppler crashed")):
         resp = client.post(f"/analyze/{sid}")
 
     data = resp.get_json()
-    assert data["pages"][0]["complex"] is True
+    assert data["pages"][0]["classification"] == "Complex"
     assert data["pages"][0]["upgrade_error"] == "poppler crashed"
+
+
+def test_missing_page_file_defaults_complex(app_with_session):
+    client, sid = app_with_session
+
+    app = client.application
+    sm = app.session_manager
+    meta = sm.load_meta(sid)
+    page_path = os.path.join(sm.get_page_dir(sid), meta["pages"][0]["path"])
+    os.remove(page_path)
+
+    resp = client.post(f"/analyze/{sid}")
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["pages"][0]["classification"] == "Complex"
+    assert data["pages"][0]["error"] == "Page file missing"
+
+
+def test_missing_page_file_classification_persists(app_with_session):
+    client, sid = app_with_session
+
+    app = client.application
+    sm = app.session_manager
+    meta = sm.load_meta(sid)
+    page_path = os.path.join(sm.get_page_dir(sid), meta["pages"][0]["path"])
+    os.remove(page_path)
+
+    resp = client.post(f"/analyze/{sid}")
+    assert resp.status_code == 200
+
+    # The mutation must be written to disk, not just reported in the response
+    # body. Otherwise the next /analyze call redoes the same check forever.
+    reloaded = sm.load_meta(sid)
+    assert reloaded["pages"][0]["classification"] == "Complex"
+    assert reloaded["pages"][0]["error"] == "Page file missing"
+
+
+def test_legacy_session_classification_normalized(tmp_path):
+    app = create_app()
+    app.config["TESTING"] = True
+    app.config["UPLOAD_DIR"] = str(tmp_path / "uploads")
+    app.config["CROP_DIR"] = str(tmp_path / "crops")
+    os.makedirs(app.config["UPLOAD_DIR"], exist_ok=True)
+    os.makedirs(app.config["CROP_DIR"], exist_ok=True)
+
+    from session_manager import SessionManager
+    sm = SessionManager(app.config["UPLOAD_DIR"], app.config["CROP_DIR"])
+    app.session_manager = sm
+
+    sid = sm.create_session()
+    sm.save_meta(sid, {
+        "pages": [
+            {"path": "p0.png", "complex": True, "labels": ["table"], "crops": []},
+            {"path": "p1.png", "complex": False, "labels": [], "crops": []},
+        ]
+    })
+
+    with app.test_client() as client:
+        resp = client.get(f"/session/{sid}")
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["pages"][0]["classification"] == "Complex"
+    assert data["pages"][1]["classification"] == "Simple"
+
+
+def test_analyze_skips_pages_with_existing_classification(app_with_session):
+    client, sid = app_with_session
+
+    app = client.application
+    sm = app.session_manager
+    meta = sm.load_meta(sid)
+    meta["pages"][0]["classification"] = "Simple"
+    sm.save_meta(sid, meta)
+
+    with patch("app.analyze_page") as mock_analyze:
+        resp = client.post(f"/analyze/{sid}")
+
+    assert resp.status_code == 200
+    mock_analyze.assert_not_called()
+    data = resp.get_json()
+    assert data["pages"][0]["classification"] == "Simple"

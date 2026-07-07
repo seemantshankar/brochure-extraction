@@ -58,7 +58,7 @@ def test_sessions_page_lists_existing_sessions(isolated_client):
     app.session_manager.save_meta(sid, {
         "files": ["brochure.pdf"],
         "pages": [
-            {"path": "page_000.png", "complex": True, "labels": ["table"], "crops": []}
+            {"path": "page_000.png", "classification": "Complex", "crops": []}
         ],
     })
 
@@ -73,7 +73,7 @@ def test_delete_session_removes_uploads_and_crops(isolated_client):
     app.session_manager.save_meta(sid, {
         'files': ['to_delete.pdf'],
         'pages': [
-            {'path': 'page_000.png', 'complex': True, 'labels': ['table'], 'crops': []}
+            {'path': 'page_000.png', 'classification': 'Complex', 'crops': []}
         ],
     })
 

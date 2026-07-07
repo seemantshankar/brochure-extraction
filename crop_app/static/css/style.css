@@ -270,6 +270,11 @@ header h1 {
   color: var(--text-secondary);
 }
 
+.badge.badge-pending {
+  background: var(--bg-muted, #f0f0f0);
+  color: var(--text-tertiary, #666);
+}
+
 /* ====================================
    4. ANNOTATION LAYOUT
    ==================================== */

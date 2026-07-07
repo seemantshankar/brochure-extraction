@@ -15,6 +15,19 @@ def format_datetime(unix_ts):
     return datetime.datetime.fromtimestamp(unix_ts).strftime("%b %d, %Y %H:%M")
 
 
+def normalize_classification(page):
+    """Return a page's classification, falling back to the legacy
+    `complex`/`labels` contract so sessions created before the
+    `classification` field existed still render correctly (Complex/Simple)
+    instead of as a non-clickable "Pending"."""
+    cls = page.get("classification")
+    if cls is not None:
+        return cls
+    if "complex" in page:
+        return "Complex" if page.get("complex") else "Simple"
+    return None
+
+
 def create_app():
     app = Flask(__name__)
     app.jinja_env.filters["datetime"] = format_datetime
@@ -69,8 +82,7 @@ def create_app():
             all_pages=[
                 {
                     "index": i,
-                    "complex": p["complex"],
-                    "labels": p["labels"],
+                    "classification": normalize_classification(p),
                     "path": p["path"],
                     "has_draft": "draft" in p,
                 }
@@ -80,6 +92,7 @@ def create_app():
 
     @app.route("/upload", methods=["POST"])
     def upload():
+        _sm = app.session_manager
         files = request.files.getlist("files")
         if not files or files[0].filename == "":
             return jsonify({"error": "No files provided"}), 400
@@ -108,8 +121,7 @@ def create_app():
                 for page_idx, page_path in enumerate(pages):
                     pages_meta.append({
                         "path": os.path.relpath(page_path, page_dir),
-                        "complex": None,
-                        "labels": [],
+                        "classification": None,
                         "crops": [],
                         "pdf_path": pdf_relpath,
                         "pdf_page": page_idx,
@@ -125,8 +137,7 @@ def create_app():
                 img.save(page_path, "PNG")
                 pages_meta.append({
                     "path": os.path.relpath(page_path, page_dir),
-                    "complex": None,
-                    "labels": [],
+                    "classification": None,
                     "crops": [],
                     "pdf_path": None,
                     "pdf_page": None,
@@ -153,23 +164,22 @@ def create_app():
         updated = False
 
         for page_info in meta["pages"]:
-            if page_info["complex"] is not None:
+            if page_info.get("classification") is not None:
                 continue
 
             page_path = os.path.join(page_dir, page_info["path"])
             if not os.path.exists(page_path):
-                page_info["complex"] = False
-                page_info["labels"] = []
+                page_info["classification"] = "Complex"
                 page_info["error"] = "Page file missing"
+                updated = True
                 continue
 
             result = analyze_page(page_path)
-            page_info["complex"] = result["complex"]
-            page_info["labels"] = result["labels"]
+            page_info["classification"] = result.get("classification", "Complex")
             if result.get("error"):
                 page_info["error"] = result["error"]
 
-            if result["complex"] and page_info.get("pdf_path") and page_info.get("pdf_page") is not None:
+            if page_info["classification"] == "Complex" and page_info.get("pdf_path") and page_info.get("pdf_page") is not None:
                 try:
                     pdf_full_path = os.path.join(session_dir, page_info["pdf_path"])
                     upgrade_page_to_hires(pdf_full_path, page_path, page_info["pdf_page"])
@@ -189,7 +199,11 @@ def create_app():
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return jsonify({"error": "Session not found"}), 404
-        return jsonify(_sm.load_meta(session_id))
+        meta = _sm.load_meta(session_id)
+        for page in meta.get("pages", []):
+            if page.get("classification") is None:
+                page["classification"] = normalize_classification(page)
+        return jsonify(meta)
 
     @app.route("/pages/<session_id>/<filename>", methods=["GET"])
     def serve_page(session_id, filename):

@@ -61,7 +61,7 @@ Brochure Extraction/
 
 1. User uploads files → Flask generates a UUID `session_id`
 2. `uploads/<session_id>/` created; files processed and stored
-3. `meta.json` tracks: page list, complexity labels per page, crop boxes per page, crop file paths
+3. `meta.json` tracks: page list, classification (Simple/Complex) per page, crop boxes per page, crop file paths
 4. Crops saved to `crops/<session_id>/`
 5. Session persists across browser refreshes (all state on disk)
 
@@ -86,16 +86,19 @@ Brochure Extraction/
 - Each page image sent to the model specified in `.env` as `PAGE_ANALYSIS_MODEL_ID`
 - API call: OpenRouter chat/completions with image in messages (vision)
 - `reasoning.enabled: true` as per user's reference implementation
-- Prompt instructs the model to return structured JSON: `{"complex": bool, "labels": [...]}`
-- Labels include: `table`, `swatch_grid`, `image_grid`, `text_grid`, `feature_matrix`, `stat_cards`, `technical_drawing`, `none`
-- Pages where `complex == true` are flagged
+- Prompt instructs the model to return structured JSON: `{"classification": "Simple" | "Complex"}`
+- A page is `Simple` only when at least one positive indicator is true and both negative/general constraints are true.
+- Positive indicators: image-only with no text, less than 60% text overall, simple tables without sub-sections/spans/merges and less than 60% text, or all text bold/large (>18pt approximately).
+- Negative/general constraints: no excessive/complex symbols and confidently scannable by a small/cheap vision LLM.
+- Pages where `classification == "Complex"` are upgraded to 300 DPI and highlighted for manual cropping.
+- Pages where `classification == "Simple"` remain at 150 DPI.
 - Results stored in `meta.json` under each page entry
 
 ### 3.4 Results Display
 
 - Thumbnail grid of all pages
-- Each complex page shows a colored badge/tag with complexity labels
-- Click a complex page → navigates to `/annotate/<session_id>?page=<n>`
+- Each Complex page (classification == "Complex") shows a colored badge/tag with its classification
+- Click a Complex page → navigates to `/annotate/<session_id>?page=<n>`
 
 ---
 

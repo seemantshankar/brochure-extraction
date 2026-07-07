@@ -79,6 +79,7 @@ def create_app():
 
     @app.route("/upload", methods=["POST"])
     def upload():
+        _sm = app.session_manager
         files = request.files.getlist("files")
         if not files or files[0].filename == "":
             return jsonify({"error": "No files provided"}), 400

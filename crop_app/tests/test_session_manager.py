@@ -27,7 +27,7 @@ def test_create_session_creates_dirs(manager):
 
 def test_save_and_load_meta(manager):
     sid = manager.create_session()
-    data = {"pages": [{"path": "p0.png", "complex": True, "labels": ["table"]}]}
+    data = {"pages": [{"path": "p0.png", "classification": "Complex"}]}
     manager.save_meta(sid, data)
     loaded = manager.load_meta(sid)
     assert loaded == data

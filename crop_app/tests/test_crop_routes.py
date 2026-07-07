@@ -26,7 +26,7 @@ def client_with_session(tmp_path):
     img.save(os.path.join(page_dir, "page_000.png"))
 
     sm.save_meta(sid, {
-        "pages": [{"path": "page_000.png", "complex": True, "labels": ["table"], "crops": []}]
+        "pages": [{"path": "page_000.png", "classification": "Complex", "crops": []}]
     })
 
     with app.test_client() as client:

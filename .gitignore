@@ -39,3 +39,4 @@ output_*/
 
 # Generated HTML extractions
 crop_app/static/extracted/*.html
+crop_app/static/extracted/*/

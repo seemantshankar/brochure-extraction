@@ -122,9 +122,9 @@ def create_app():
                 page_path = os.path.join(page_dir, page_name)
                 img.save(page_path, "PNG")
                 pages_meta.append({
-                        "path": os.path.relpath(page_path, page_dir),
-                        "classification": None,
-                        "crops": [],
+                    "path": os.path.relpath(page_path, page_dir),
+                    "classification": None,
+                    "crops": [],
                     "pdf_path": None,
                     "pdf_page": None,
                 })

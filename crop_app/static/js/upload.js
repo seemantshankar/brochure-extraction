@@ -150,16 +150,19 @@ document.addEventListener("DOMContentLoaded", () => {
       const badge = document.createElement("span");
       badge.className = "badge";
 
-      if (page.complex === true) {
+      if (page.classification === "Complex") {
         badge.classList.add("badge-complex");
         badge.textContent = "Complex";
         card.classList.add("page-complex");
         card.addEventListener("click", () => {
           window.location = `/annotate/${sessionId}?page=${index}`;
         });
-      } else {
+      } else if (page.classification === "Simple") {
         badge.classList.add("badge-simple");
         badge.textContent = "Simple";
+      } else {
+        badge.classList.add("badge-pending");
+        badge.textContent = "Pending";
       }
 
       card.appendChild(badge);

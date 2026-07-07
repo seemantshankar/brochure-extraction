@@ -347,6 +347,22 @@ header h1 {
   object-fit: cover;
 }
 
+.page-thumbs .thumb-item.has-draft::after {
+  content: "";
+  position: absolute;
+  bottom: 2px;
+  right: 2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg-secondary);
+}
+
+.page-thumbs .thumb-item {
+  position: relative;
+}
+
 /* Main layout */
 .annotate-main {
   display: flex;

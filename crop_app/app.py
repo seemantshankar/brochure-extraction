@@ -1,5 +1,6 @@
 import os
 import shutil
+import datetime
 from flask import Flask, request, jsonify, redirect, url_for, send_file, render_template
 from werkzeug.utils import secure_filename
 from session_manager import SessionManager
@@ -10,8 +11,13 @@ from llm import analyze_page
 UPLOAD_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
 
 
+def format_datetime(unix_ts):
+    return datetime.datetime.fromtimestamp(unix_ts).strftime("%b %d, %Y %H:%M")
+
+
 def create_app():
     app = Flask(__name__)
+    app.jinja_env.filters["datetime"] = format_datetime
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(base_dir)
@@ -46,11 +52,12 @@ def create_app():
 
     @app.route("/annotate/<session_id>", methods=["GET"])
     def annotate_page(session_id):
-        if not sm.session_exists(session_id):
+        _sm = app.session_manager
+        if not _sm.session_exists(session_id):
             return "Session not found", 404
 
         page_index = request.args.get("page", 0, type=int)
-        meta = sm.load_meta(session_id)
+        meta = _sm.load_meta(session_id)
 
         if page_index >= len(meta["pages"]):
             return "Page index out of range", 404
@@ -60,7 +67,13 @@ def create_app():
             session_id=session_id,
             page_data=meta["pages"][page_index],
             all_pages=[
-                {"index": i, "complex": p["complex"], "labels": p["labels"], "path": p["path"]}
+                {
+                    "index": i,
+                    "complex": p["complex"],
+                    "labels": p["labels"],
+                    "path": p["path"],
+                    "has_draft": "draft" in p,
+                }
                 for i, p in enumerate(meta["pages"])
             ],
         )
@@ -71,10 +84,10 @@ def create_app():
         if not files or files[0].filename == "":
             return jsonify({"error": "No files provided"}), 400
 
-        session_id = sm.create_session()
-        original_dir = sm.get_original_dir(session_id)
-        page_dir = sm.get_page_dir(session_id)
-        session_dir = sm.get_session_dir(session_id)
+        session_id = _sm.create_session()
+        original_dir = _sm.get_original_dir(session_id)
+        page_dir = _sm.get_page_dir(session_id)
+        session_dir = _sm.get_session_dir(session_id)
         pages_meta = []
         page_counter = 0
 
@@ -120,8 +133,11 @@ def create_app():
                 })
                 page_counter += 1
 
-        meta = {"pages": pages_meta}
-        sm.save_meta(session_id, meta)
+        meta = {
+            "files": [f.filename for f in files if f.filename],
+            "pages": pages_meta,
+        }
+        _sm.save_meta(session_id, meta)
 
         return jsonify({"session_id": session_id, "page_count": page_counter})
 
@@ -203,20 +219,36 @@ def create_app():
         page_path = os.path.join(_sm.get_page_dir(session_id), page_info["path"])
 
         cm = CropManager(app.config["CROP_DIR"])
-        saved = []
+        existing = page_info.get("crops", [])
+        existing_keys = {
+            (round(c["bbox"][0], 6), round(c["bbox"][1], 6),
+             round(c["bbox"][2], 6), round(c["bbox"][3], 6))
+            for c in existing
+        }
+
+        newly_saved = []
         for item in data["crops"]:
             bbox = item["bbox"]
+            key = (round(bbox[0], 6), round(bbox[1], 6),
+                   round(bbox[2], 6), round(bbox[3], 6))
+            if key in existing_keys:
+                continue
             crop_path = cm.save_crop(session_id, page_path, bbox)
-            saved.append({
-                "path": crop_path,
-                "filename": os.path.basename(crop_path),
+            crop_filename = os.path.basename(crop_path)
+            record = {
+                "path": crop_filename,
+                "filename": crop_filename,
                 "bbox": bbox,
-            })
+            }
+            newly_saved.append(record)
+            existing.append(record)
 
-        page_info["crops"] = saved
+        page_info["crops"] = existing
+        if "draft" in page_info:
+            del page_info["draft"]
         _sm.save_meta(session_id, meta)
 
-        return jsonify({"crops": saved, "page_index": page_index})
+        return jsonify({"crops": existing, "added": newly_saved, "page_index": page_index})
 
     @app.route("/trim/<session_id>/<crop_filename>", methods=["POST"])
     def trim_crop(session_id, crop_filename):
@@ -239,6 +271,38 @@ def create_app():
 
         return jsonify({"path": crop_path, "filename": crop_filename})
 
+    @app.route("/delete-crop/<session_id>", methods=["POST"])
+    def delete_crop(session_id):
+        _sm = app.session_manager
+        if not _sm.session_exists(session_id):
+            return jsonify({"error": "Session not found"}), 404
+
+        data = request.get_json()
+        if not data or "page_index" not in data or "filename" not in data:
+            return jsonify({"error": "Missing page_index or filename"}), 400
+
+        meta = _sm.load_meta(session_id)
+        page_index = data["page_index"]
+        if page_index >= len(meta["pages"]):
+            return jsonify({"error": "Invalid page_index"}), 400
+
+        page_info = meta["pages"][page_index]
+        filename = data["filename"]
+
+        cm = CropManager(app.config["CROP_DIR"])
+        crop_path = os.path.join(cm.crop_root, session_id, filename)
+        if os.path.exists(crop_path):
+            os.remove(crop_path)
+
+        before = len(page_info.get("crops", []))
+        page_info["crops"] = [
+            c for c in page_info.get("crops", []) if c.get("filename") != filename
+        ]
+        removed = before - len(page_info["crops"])
+
+        _sm.save_meta(session_id, meta)
+        return jsonify({"ok": True, "removed": removed})
+
     @app.route("/crops/<session_id>/<crop_filename>", methods=["GET"])
     def serve_crop(session_id, crop_filename):
         cm = CropManager(app.config["CROP_DIR"])
@@ -247,6 +311,84 @@ def create_app():
         if not os.path.exists(crop_path):
             return jsonify({"error": "Crop not found"}), 404
         return send_file(crop_path, mimetype="image/png")
+
+    @app.route("/sessions", methods=["GET"])
+    def list_sessions():
+        _sm = app.session_manager
+        sessions = []
+        for sid in _sm.list_sessions():
+            meta = _sm.load_meta(sid)
+            if not meta:
+                continue
+            session_dir = _sm.get_session_dir(sid)
+            page_count = len(meta.get("pages", []))
+            crop_count = sum(len(p.get("crops", [])) for p in meta.get("pages", []))
+            files = meta.get("files", [])
+            name = files[0] if files else sid
+            sessions.append({
+                "id": sid,
+                "name": name,
+                "files": files,
+                "page_count": page_count,
+                "crop_count": crop_count,
+                "uploaded_at": os.path.getmtime(session_dir),
+            })
+        return render_template("sessions.html", sessions=sessions)
+
+    @app.route("/save-draft/<session_id>", methods=["POST"])
+    def save_draft(session_id):
+        _sm = app.session_manager
+        if not _sm.session_exists(session_id):
+            return jsonify({"error": "Session not found"}), 404
+
+        data = request.get_json()
+        if not data or "page_index" not in data or "boxes" not in data:
+            return jsonify({"error": "Missing page_index or boxes"}), 400
+
+        meta = _sm.load_meta(session_id)
+        page_index = data["page_index"]
+        if page_index >= len(meta["pages"]):
+            return jsonify({"error": "Invalid page_index"}), 400
+
+        page_info = meta["pages"][page_index]
+        page_info["draft"] = data["boxes"]
+        _sm.save_meta(session_id, meta)
+        return jsonify({"ok": True})
+
+    @app.route("/clear-draft/<session_id>", methods=["POST"])
+    def clear_draft(session_id):
+        _sm = app.session_manager
+        if not _sm.session_exists(session_id):
+            return jsonify({"error": "Session not found"}), 404
+
+        data = request.get_json()
+        if not data or "page_index" not in data:
+            return jsonify({"error": "Missing page_index"}), 400
+
+        meta = _sm.load_meta(session_id)
+        page_index = data["page_index"]
+        if page_index >= len(meta["pages"]):
+            return jsonify({"error": "Invalid page_index"}), 400
+
+        page_info = meta["pages"][page_index]
+        if "draft" in page_info:
+            del page_info["draft"]
+        _sm.save_meta(session_id, meta)
+        return jsonify({"ok": True})
+
+    @app.route("/sessions/<session_id>", methods=["DELETE"])
+    def delete_session(session_id):
+        _sm = app.session_manager
+        if not _sm.session_exists(session_id):
+            return jsonify({"error": "Session not found"}), 404
+
+        session_dir = _sm.get_session_dir(session_id)
+        crop_dir = _sm.get_crop_dir(session_id)
+
+        shutil.rmtree(session_dir, ignore_errors=True)
+        shutil.rmtree(crop_dir, ignore_errors=True)
+
+        return jsonify({"ok": True})
 
     return app
 

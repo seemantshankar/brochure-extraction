@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sessions — Brochure Crop Tool</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <style>
+    .sessions-container {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 60px 24px;
+    }
+    .sessions-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 32px;
+    }
+    .sessions-header h1 {
+      font-size: 1.8rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .sessions-header .subtitle {
+      color: var(--text-secondary);
+      font-size: 0.95rem;
+    }
+    .btn-new {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 10px 18px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: #fff;
+      background: var(--accent);
+      border: none;
+      border-radius: var(--radius);
+      cursor: pointer;
+      text-decoration: none;
+      transition: background var(--transition);
+    }
+    .btn-new:hover {
+      background: var(--accent-hover);
+    }
+    .session-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 20px;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      transition: border-color var(--transition), background var(--transition);
+    }
+    .session-card:hover {
+      border-color: var(--text-muted);
+      background: var(--bg-surface-hover);
+    }
+    .session-icon {
+      width: 48px;
+      height: 48px;
+      flex-shrink: 0;
+      background: var(--bg-surface);
+      border-radius: var(--radius);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.5rem;
+    }
+    .session-meta {
+      flex: 1;
+      min-width: 0;
+    }
+    .session-name {
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-bottom: 4px;
+    }
+    .session-details {
+      font-size: 0.82rem;
+      color: var(--text-secondary);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .session-detail {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .session-files {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      margin-top: 6px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .session-actions {
+      display: flex;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .btn-annotate {
+      padding: 8px 16px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: #fff;
+      background: var(--accent);
+      border: none;
+      border-radius: var(--radius);
+      cursor: pointer;
+      text-decoration: none;
+      transition: background var(--transition);
+    }
+    .btn-annotate:hover {
+      background: var(--accent-hover);
+    }
+    .btn-delete {
+      padding: 8px 16px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: #fff;
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      cursor: pointer;
+      text-decoration: none;
+      transition: background var(--transition), border-color var(--transition), color var(--transition);
+    }
+    .btn-delete:hover {
+      background: rgba(233, 69, 96, 0.1);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .empty-state {
+      text-align: center;
+      padding: 80px 24px;
+      color: var(--text-muted);
+    }
+    .empty-state h2 {
+      font-size: 1.3rem;
+      margin-bottom: 8px;
+      color: var(--text-secondary);
+    }
+    .empty-state p {
+      margin-bottom: 24px;
+    }
+
+      text-align: center;
+      padding: 80px 24px;
+      color: var(--text-muted);
+    }
+    .empty-state h2 {
+      font-size: 1.3rem;
+      margin-bottom: 8px;
+      color: var(--text-secondary);
+    }
+    .empty-state p {
+      margin-bottom: 24px;
+    }
+    @media (max-width: 640px) {
+      .sessions-container {
+        padding: 32px 16px;
+      }
+      .session-card {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+      }
+      .session-actions {
+        width: 100%;
+      }
+      .btn-annotate {
+        width: 100%;
+        text-align: center;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="sessions-container">
+    <div class="sessions-header">
+      <div>
+        <h1>Your Brochures</h1>
+        <p class="subtitle">Revisit and edit your previously uploaded PDFs and images.</p>
+      </div>
+      <a href="/" class="btn-new">+ New Upload</a>
+    </div>
+
+    {% if sessions %}
+      {% for s in sessions %}
+        <div class="session-card">
+          <div class="session-icon">&#128196;</div>
+          <div class="session-meta">
+            <div class="session-name">{{ s.name }}</div>
+            <div class="session-details">
+              <span class="session-detail">Pages: {{ s.page_count }}</span>
+              {% if s.crop_count > 0 %}
+                <span class="session-detail">Crops: {{ s.crop_count }}</span>
+              {% endif %}
+              <span class="session-detail">{{ s.uploaded_at | datetime }}</span>
+            </div>
+            {% if s.files|length > 1 %}
+              <div class="session-files">{{ s.files | join(', ') }}</div>
+            {% endif %}
+          </div>
+          <div class="session-actions">
+            <a class="btn-annotate" href="/annotate/{{ s.id }}?page=0">Open</a>
+            <button class="btn-delete" data-session-id="{{ s.id }}" data-session-name="{{ s.name }}">Delete</button>
+          </div>
+        </div>
+      {% endfor %}
+    {% else %}
+      <div class="empty-state">
+        <h2>No brochures uploaded yet</h2>
+        <p>Upload a PDF or images to get started.</p>
+        <a href="/" class="btn-new">Upload Brochure</a>
+      </div>
+    {% endif %}
+  </div>
+  <!-- Delete confirmation modal -->
+  <div class="modal-overlay" id="delete-modal" hidden>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Delete Session</h3>
+        <button class="modal-close" id="delete-modal-close">&times;</button>
+      </div>
+      <p>Are you sure you want to delete <strong id="delete-session-name"></strong>? This will remove all pages, crops, and analysis data. This action cannot be undone.</p>
+      <div class="modal-actions">
+        <button id="delete-cancel-btn">Cancel</button>
+        <button id="delete-confirm-btn" class="btn-primary">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var modal = document.getElementById('delete-modal');
+      var closeBtn = document.getElementById('delete-modal-close');
+      var cancelBtn = document.getElementById('delete-cancel-btn');
+      var confirmBtn = document.getElementById('delete-confirm-btn');
+      var nameEl = document.getElementById('delete-session-name');
+      var currentSessionId = null;
+
+      function openModal(sessionId, sessionName) {
+        currentSessionId = sessionId;
+        nameEl.textContent = sessionName;
+        modal.hidden = false;
+      }
+
+      function closeModal() {
+        modal.hidden = true;
+        currentSessionId = null;
+      }
+
+      function showToast(msg, kind) {
+        var container = document.getElementById('toast-container');
+        if (!container) return;
+        var el = document.createElement('div');
+        el.className = 'toast ' + (kind || 'info');
+        el.textContent = msg;
+        container.appendChild(el);
+        var duration = kind === 'success' ? 3000 : kind === 'error' ? 4000 : 2000;
+        setTimeout(function () {
+          if (!el.parentNode) return;
+          el.classList.add('hiding');
+          setTimeout(function () {
+            if (el.parentNode) el.parentNode.removeChild(el);
+          }, 300);
+        }, duration);
+      }
+
+      closeBtn.addEventListener('click', closeModal);
+      cancelBtn.addEventListener('click', closeModal);
+      confirmBtn.addEventListener('click', function () {
+        if (!currentSessionId) return;
+        var sid = currentSessionId;
+        closeModal();
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = 'Deleting...';
+        fetch('/sessions/' + sid, {
+          method: 'DELETE',
+        }).then(function (resp) {
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = 'Delete';
+          if (!resp.ok) return resp.json().then(function (err) { throw new Error(err.error || 'Failed'); });
+          return resp.json();
+        }).then(function () {
+          showToast('Session deleted', 'success');
+          setTimeout(function () { window.location.reload(); }, 600);
+        }).catch(function (err) {
+          showToast('Delete failed: ' + err.message, 'error');
+        });
+      });
+
+      document.querySelectorAll('.btn-delete').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          openModal(btn.dataset.sessionId, btn.dataset.sessionName || 'this session');
+        });
+      });
+    })();
+  </script>
+</body>
+</html>
+</html>

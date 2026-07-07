@@ -8,6 +8,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const zoomLevel = document.getElementById("zoom-level");
 
   const { sessionId, pageData, allPages } = window.APP_DATA;
+  const pageIndex = parseInt(new URLSearchParams(window.location.search).get("page")) || 0;
 
   const ZOOM_LEVELS = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0];
   const PADDING = 20;
@@ -495,8 +496,40 @@ document.addEventListener("DOMContentLoaded", () => {
       b.cropFilename = data.crops[i].filename;
       b.cropPath = data.crops[i].path;
     });
+    fetch("/clear-draft/" + sessionId, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ page_index: pageIndex }),
+    }).catch(function (e) { console.error("Clear draft failed:", e); });
     updateCropPanel(boxes);
     showToast("Committed " + n + " crop" + (n !== 1 ? "s" : "") + " successfully", "success");
+  }
+
+  var draftSaveTimer = null;
+
+  function scheduleSaveDraft() {
+    if (draftSaveTimer) clearTimeout(draftSaveTimer);
+    draftSaveTimer = setTimeout(function () {
+      draftSaveTimer = null;
+      doSaveDraft();
+    }, 800);
+  }
+
+  async function doSaveDraft() {
+    const pi = pageIndex;
+    const boxes = state.boxes.filter(function (b) { return !b.committed; }).map(function (b) {
+      return { x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1 };
+    });
+    if (boxes.length === 0) return;
+    try {
+      await fetch("/save-draft/" + sessionId, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ page_index: pi, boxes: boxes }),
+      });
+    } catch (err) {
+      console.error("Draft save failed:", err);
+    }
   }
 
   loadPageImage();
@@ -531,6 +564,19 @@ document.addEventListener("DOMContentLoaded", () => {
         });
       }
 
+      if (pageData.draft && Array.isArray(pageData.draft)) {
+        pageData.draft.forEach(function (box) {
+          state.boxes.push({
+            id: state.nextBoxId++,
+            x0: box.x0, y0: box.y0, x1: box.x1, y1: box.y1,
+            selected: false,
+            committed: false,
+            cropFilename: null,
+            cropPath: null,
+          });
+        });
+      }
+
       render();
       updateCropPanel(state.boxes);
     };
@@ -543,6 +589,10 @@ document.addEventListener("DOMContentLoaded", () => {
     allPages.forEach(function (page, index) {
       const thumb = document.createElement("div");
       thumb.className = "thumb-item" + (index === currentPageIndex ? " active" : "");
+
+      if (page.has_draft) {
+        thumb.classList.add("has-draft");
+      }
 
       const img = document.createElement("img");
       img.src = "/pages/" + sessionId + "/" + page.path;
@@ -589,6 +639,25 @@ document.addEventListener("DOMContentLoaded", () => {
       if (state.boxes.length === 0) return;
       const pageIndex = parseInt(new URLSearchParams(window.location.search).get("page")) || 0;
       commitCrops(sessionId, pageIndex, state.boxes);
+    });
+
+    window.addEventListener("beforeunload", function (e) {
+      const hasUncommitted = state.boxes.some(function (b) { return !b.committed; });
+      if (hasUncommitted) {
+        e.preventDefault();
+        e.returnValue = "";
+        if (draftSaveTimer) clearTimeout(draftSaveTimer);
+        draftSaveTimer = null;
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", "/save-draft/" + sessionId, false);
+        xhr.setRequestHeader("Content-Type", "application/json");
+        var pi = pageIndex;
+        var uncommitted = state.boxes.filter(function (b) { return !b.committed; }).map(function (b) {
+          return { x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1 };
+        });
+        xhr.send(JSON.stringify({ page_index: pi, boxes: uncommitted }));
+        return xhr.status < 500;
+      }
     });
 
     window.addEventListener("crop-trimmed", function (e) {
@@ -646,11 +715,29 @@ document.addEventListener("DOMContentLoaded", () => {
       state.boxes.forEach((box, idx) => { box.selected = idx === zone.boxIndex; });
 
       if (zone.zone === "delete") {
+        const b = state.boxes[zone.boxIndex];
+        if (b.committed && b.cropFilename) {
+          fetch("/delete-crop/" + sessionId, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ page_index: pageIndex, filename: b.cropFilename }),
+          }).then(function (resp) {
+            if (!resp.ok) throw new Error("HTTP " + resp.status);
+            showToast("Crop deleted", "success");
+          }).catch(function (err) {
+            console.error("Delete crop failed:", err);
+            showToast("Failed to delete crop — try again", "error");
+            state.boxes.splice(zone.boxIndex, 0, b);
+            render();
+            updateCropPanel(state.boxes);
+          });
+        }
         state.boxes.splice(zone.boxIndex, 1);
         state.mode = "idle";
         state.interaction = null;
         render();
         updateCropPanel(state.boxes);
+        scheduleSaveDraft();
         return;
       } else if (zone.zone === "handle") {
         state.mode = "move";
@@ -815,6 +902,7 @@ document.addEventListener("DOMContentLoaded", () => {
     canvas.style.cursor = "";
     render();
     updateCropPanel(state.boxes);
+    scheduleSaveDraft();
   }
 
   const ZOOM_SPEED = 0.005;
@@ -849,7 +937,7 @@ document.addEventListener("DOMContentLoaded", () => {
     } else if (e.key === "-") {
       e.preventDefault();
       zoomOut();
-    } else if (e.key === "Delete" || e.key === "Backspace") {
+    } else     if (e.key === "Delete" || e.key === "Backspace") {
       e.preventDefault();
       const selected = state.boxes.filter(b => b.selected);
       if (selected.length > 0) {
@@ -858,6 +946,7 @@ document.addEventListener("DOMContentLoaded", () => {
         state.interaction = null;
         render();
         updateCropPanel(state.boxes);
+        scheduleSaveDraft();
       }
     }
   }

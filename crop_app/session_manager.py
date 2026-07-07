@@ -47,5 +47,17 @@ class SessionManager:
         os.makedirs(crop_dir, exist_ok=True)
         return crop_dir
 
+    def list_sessions(self) -> list:
+        """List all session IDs found in the upload directory, sorted by newest first."""
+        if not os.path.isdir(self.upload_dir):
+            return []
+        sessions = []
+        for name in os.listdir(self.upload_dir):
+            sid_dir = os.path.join(self.upload_dir, name)
+            if os.path.isdir(sid_dir):
+                sessions.append(name)
+        sessions.sort(key=lambda s: os.path.getmtime(os.path.join(self.upload_dir, s)), reverse=True)
+        return sessions
+
     def session_exists(self, session_id: str) -> bool:
         return os.path.isdir(self.get_session_dir(session_id))

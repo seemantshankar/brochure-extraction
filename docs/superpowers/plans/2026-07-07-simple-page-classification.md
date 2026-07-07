@@ -2,28 +2,29 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the binary `complex: bool` classification with `classification: "Simple" | "Complex"` using 6 specific criteria that determine whether a page can be processed by a small/cheap vision LLM.
+**Goal:** Replace the binary `complex: bool` / `labels: list[str]` page-analysis contract with `classification: "Simple" | "Complex"`, where "Simple" means the page can be processed confidently by a small/cheap vision LLM.
 
-**Architecture:** LLM-only approach where the vision model evaluates all 6 criteria holistically in a single pass and returns the classification.
+**Architecture:** Use one OpenRouter vision call per page. The LLM returns a minimal JSON object with a single `classification` field. The Flask app stores this field in session metadata and derives PDF upgrade behavior from it: only `"Complex"` pages are upgraded to high resolution; `"Simple"` pages remain at the original 150 DPI.
 
-**Tech Stack:** Python, Flask, OpenRouter API, PIL/Pillow, pytest
+**Tech Stack:** Python, Flask, OpenRouter API, PIL/Pillow, pytest, vanilla JavaScript/CSS
 
 ## Global Constraints
 
-- Page classified as "Simple" when BOTH conditions are satisfied:
+- Page metadata uses `classification`, not `complex` or `labels`.
+- Valid classifications: `"Simple"`, `"Complex"`, or `None` before analysis.
+- Null classification before analysis renders as `Pending` in the upload page UI.
+- Default on LLM exception, invalid JSON, missing field, or unknown classification value: `"Complex"`.
+- A page is `"Simple"` only when both condition groups are satisfied:
   - **Positive Indicators (at least one must be true):**
-    1. The page only contains images with no text (0% text)
-    2. The page contains less than 60% text overall
-    3. The page contains simple tables (no sub-sections, row/column spans, or merges) AND has less than 60% text overall
-    4. All text on the page is bold/large (approximately >18pt and high weight)
+    1. The page only contains images with no text (0% text).
+    2. The page contains less than 60% text overall.
+    3. The page contains simple tables with no sub-sections, row/column spans, or merges AND has less than 60% text overall.
+    4. All text on the page is bold/large (approximately >18pt and high weight).
   - **Negative/General Constraints (both must be true):**
-    5. The page does not contain too many or complex symbols (e.g., ^^#, **#, ^^^, etc.)
-    6. The page can be easily and confidently scanned by a small/cheap vision LLM
-- Response format: minimal - just `classification` value
-- Confidence-based: only return "Simple" when all constraints are confidently met; otherwise "Complex"
-- Simple pages remain at 150 DPI; Complex pages upgrade to 300 DPI
-- Frontend shows all pages with Simple/Complex markers; null classification before analysis shows "Pending" badge
-- Default on error/parse-failure: classify as "Complex"
+    5. The page does not contain too many or complex symbols (e.g., `^^#`, `**#`, `^^^`).
+    6. The page can be easily and confidently scanned by a small/cheap vision LLM.
+- If the model is unsure whether both groups are satisfied, it must classify as `"Complex"`.
+- Simple pages remain at 150 DPI; Complex pages upgrade to 300 DPI.
 
 ---
 
@@ -33,76 +34,120 @@
 
 | File | Responsibility |
 |------|----------------|
-| `crop_app/llm.py` | Update `ANALYSIS_PROMPT`, remove `LABELS` constant, update parsing |
-| `crop_app/app.py` | Update `analyze_session()` to use new classification field |
-| `crop_app/static/js/upload.js` | Update badge logic for Simple/Complex |
-| `crop_app/static/css/style.css` | Update badge classes |
-| `crop_app/tests/test_llm.py` | Add tests for new classification parsing and response handling |
-| `crop_app/tests/test_analysis.py` | Update tests to use classification field |
-| `crop_app/tests/test_app.py` | Update test data |
-| `crop_app/tests/test_crop_routes.py` | Update test data |
-| `crop_app/tests/test_session_manager.py` | Update test data |
+| `crop_app/llm.py` | Update prompt, remove label filtering, parse minimal `classification` response, default errors to `Complex` |
+| `crop_app/app.py` | Replace all `complex`/`labels` metadata usage with `classification`; keep upgrade behavior based on `Complex` |
+| `crop_app/static/js/upload.js` | Render `Complex`, `Simple`, and `Pending` badges from `classification` |
+| `crop_app/static/css/style.css` | Add/confirm badge styles for `Simple` and `Pending` |
+| `crop_app/tests/test_llm.py` | Update parser and API-error tests for classification response |
+| `crop_app/tests/test_analysis.py` | Update all analysis route fixtures, mocks, and assertions |
+| `crop_app/tests/test_app.py` | Update test metadata fixtures |
+| `crop_app/tests/test_crop_routes.py` | Update test metadata fixtures |
+| `crop_app/tests/test_session_manager.py` | Update test metadata fixtures |
+| `docs/superpowers/specs/2026-07-05-brochure-crop-tool-design.md` | Update design spec to document classification contract |
 
 ### New Files
 
-None - using existing test infrastructure.
+None.
 
 ---
 
 ## Task 1: Update LLM Prompt and Response Schema
 
 **Files:**
-- Modify: `crop_app/llm.py:22-53` (ANALYSIS_PROMPT, LABELS constant removal, related constants)
-- Modify: `crop_app/llm.py:56-126` (analyze_page function and _parse_response)
+- Modify: `crop_app/llm.py`
+- Test: `crop_app/tests/test_llm.py`
 
 **Interfaces:**
-- Consumes: Image file path
-- Produces: `{"classification": "Simple" | "Complex", "error": str|None}`
+- Consumes: `image_path: str`
+- Produces from `analyze_page(image_path)`: `{"classification": "Simple" | "Complex", "error": str | None}`
+- Produces from `_parse_response(raw)`: `{"classification": "Simple" | "Complex", "error": str | None}`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Replace parser tests in `crop_app/tests/test_llm.py`**
+
+Replace the existing parser tests with these classification-based tests:
 
 ```python
-# crop_app/tests/test_llm.py
 def test_parse_response_simple():
     raw = '{"classification": "Simple"}'
     result = _parse_response(raw)
     assert result["classification"] == "Simple"
+    assert result["error"] is None
+
 
 def test_parse_response_complex():
     raw = '{"classification": "Complex"}'
     result = _parse_response(raw)
     assert result["classification"] == "Complex"
+    assert result["error"] is None
 
-def test_parse_response_invalid():
-    raw = 'not json'
+
+def test_parse_response_with_markdown_fences():
+    raw = '```json\n{"classification": "Complex"}\n```'
     result = _parse_response(raw)
-    assert result["classification"] == "Complex"  # Default to Complex on error
+    assert result["classification"] == "Complex"
+    assert result["error"] is None
+
+
+def test_parse_response_invalid_json_defaults_complex():
+    raw = "not json at all"
+    result = _parse_response(raw)
+    assert result["classification"] == "Complex"
+    assert result["error"] is not None
+
+
+def test_parse_response_invalid_classification_defaults_complex():
+    raw = '{"classification": "Unknown"}'
+    result = _parse_response(raw)
+    assert result["classification"] == "Complex"
+    assert result["error"] is None
+```
+
+- [ ] **Step 2: Update `test_analyze_page_success` in `crop_app/tests/test_llm.py`**
+
+```python
+def test_analyze_page_success(tmp_path):
+    from PIL import Image
+    img_path = str(tmp_path / "page.png")
+    Image.new("RGB", (100, 100), "white").save(img_path)
+
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message.content = '{"classification": "Complex"}'
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = mock_response
+
+    with patch("llm._get_client", return_value=mock_client):
+        result = analyze_page(img_path)
+
+    assert result["classification"] == "Complex"
+    assert result["error"] is None
+```
+
+- [ ] **Step 3: Update `test_analyze_page_api_error` in `crop_app/tests/test_llm.py`**
+
+```python
+def test_analyze_page_api_error(tmp_path):
+    from PIL import Image
+    img_path = str(tmp_path / "page.png")
+    Image.new("RGB", (100, 100), "white").save(img_path)
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.side_effect = Exception("API down")
+
+    with patch("llm._get_client", return_value=mock_client):
+        result = analyze_page(img_path)
+
+    assert result["classification"] == "Complex"
     assert result["error"] is not None
 ```
 
-- [ ] **Step 2: Update existing tests in test_llm.py**
+- [ ] **Step 4: Run LLM tests to verify they fail before implementation**
 
-Replace existing tests that check `complex` and `labels` with new tests for `classification`:
+Run: `pytest crop_app/tests/test_llm.py -v`
+Expected: FAIL because `_parse_response` still returns `complex`/`labels` and `analyze_page` exception fallback still returns `complex`/`labels`.
 
-```python
-# Replace test_parse_response_complex_true and test_parse_response_complex_false
-def test_parse_response_complex_true():
-    raw = '{"classification": "Complex"}'
-    result = _parse_response(raw)
-    assert result["classification"] == "Complex"
-
-def test_parse_response_complex_false():
-    raw = '{"classification": "Simple"}'
-    result = _parse_response(raw)
-    assert result["classification"] == "Simple"
-```
-
-- [ ] **Step 3: Run tests to verify they fail**
-
-Run: `pytest crop_app/tests/test_llm.py::test_parse_response_simple -v`
-Expected: FAIL with "classification" key not found
-
-- [ ] **Step 4: Update ANALYSIS_PROMPT**
+- [ ] **Step 5: Replace `ANALYSIS_PROMPT` in `crop_app/llm.py`**
 
 ```python
 ANALYSIS_PROMPT = """You are analyzing a single page of a product brochure / spec sheet.
@@ -131,10 +176,32 @@ Do NOT include any other text, explanation, or markdown formatting outside the J
 """
 ```
 
-- [ ] **Step 5: Update _parse_response function**
+- [ ] **Step 6: Remove `LABELS` from `crop_app/llm.py`**
+
+Remove the `LABELS = [...]` constant entirely because labels are no longer returned or filtered.
+
+- [ ] **Step 7: Update `analyze_page` docstring and exception fallback**
+
+```python
+def analyze_page(image_path: str) -> dict:
+    """Send a page image to the LLM and return classification.
+
+    Returns: {"classification": "Simple" | "Complex", "error": str|None}
+    """
+    try:
+        ...
+        raw_content = response.choices[0].message.content or ""
+        return _parse_response(raw_content)
+
+    except Exception as e:
+        return {"classification": "Complex", "error": str(e)}
+```
+
+- [ ] **Step 8: Replace `_parse_response` in `crop_app/llm.py`**
 
 ```python
 def _parse_response(raw: str) -> dict:
+    """Parse LLM JSON response, stripping markdown fences if present."""
     text = raw.strip()
 
     if text.startswith("```"):
@@ -149,188 +216,269 @@ def _parse_response(raw: str) -> dict:
             classification = data.get("classification", "Complex")
             if classification not in ("Simple", "Complex"):
                 classification = "Complex"
-            return {
-                "classification": classification,
-                "error": None,
-            }
+            return {"classification": classification, "error": None}
     except (json.JSONDecodeError, AttributeError):
         pass
 
     return {"classification": "Complex", "error": f"Failed to parse: {raw[:200]}"}
 ```
 
-- [ ] **Step 5: Update analyze_page exception fallback**
-
-The `except` block in `analyze_page` at line 95 currently returns `{"complex": False, "labels": [], "error": str(e)}`.
-Update it to:
-
-```python
-    except Exception as e:
-        return {"classification": "Complex", "error": str(e)}
-```
-
-- [ ] **Step 6: Update analyze_page docstring**
-
-```python
-def analyze_page(image_path: str) -> dict:
-    """Send a page image to the LLM and return classification.
-
-    Returns: {"classification": "Simple" | "Complex", "error": str|None}
-    """
-```
-
-The `return _parse_response(raw_content)` call in the happy path remains unchanged.
-
-- [ ] **Step 7: Run tests to verify they pass**
+- [ ] **Step 9: Run LLM tests**
 
 Run: `pytest crop_app/tests/test_llm.py -v`
-Expected: All tests PASS
+Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add crop_app/llm.py crop_app/tests/test_llm.py
-git commit -m "feat: update LLM classification to Simple/Complex with criteria"
+git commit -m "feat: classify pages as Simple or Complex"
 ```
 
 ---
 
-## Task 2: Update App Session Analysis Logic
+## Task 2: Update Flask App Metadata and Analysis Flow
 
 **Files:**
-- Modify: `crop_app/app.py:144-185` (analyze_session function)
+- Modify: `crop_app/app.py`
+- Test: `crop_app/tests/test_analysis.py`
 
 **Interfaces:**
-- Consumes: `classification` from analyze_page
-- Produces: Updated page metadata with classification field
+- Consumes from `analyze_page`: `{"classification": "Simple" | "Complex", "error": str | None}`
+- Produces in each page metadata object: `"classification": None | "Simple" | "Complex"`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Replace metadata fixtures in `crop_app/tests/test_analysis.py`**
 
-Add to `crop_app/tests/test_analysis.py`:
+In both fixtures (`app_with_session` and `app_with_pdf_session`), replace:
 
 ```python
-def test_analyze_endpoint_returns_classification(app_with_session):
+"complex": None,
+"labels": [],
+```
+
+with:
+
+```python
+"classification": None,
+```
+
+- [ ] **Step 2: Update every mock result and assertion in `crop_app/tests/test_analysis.py`**
+
+Use these replacements:
+
+```python
+# Complex mock result
+mock_result = {"classification": "Complex", "error": None}
+
+# Simple mock result
+mock_result = {"classification": "Simple", "error": None}
+
+# Complex assertion
+assert data["pages"][0]["classification"] == "Complex"
+
+# Simple assertion
+assert data["pages"][0]["classification"] == "Simple"
+```
+
+Specific existing tests that must be updated:
+- `test_analyze_endpoint_returns_updated_meta`
+- `test_complex_non_pdf_page_does_not_trigger_upgrade`
+- `test_simple_pdf_page_does_not_trigger_upgrade`
+- `test_complex_pdf_page_triggers_upgrade`
+- `test_upgrade_failure_records_error`
+
+- [ ] **Step 3: Add missing-file fallback test in `crop_app/tests/test_analysis.py`**
+
+```python
+def test_missing_page_file_defaults_complex(app_with_session):
     client, sid = app_with_session
 
-    mock_result = {"classification": "Simple", "error": None}
-    with patch("app.analyze_page", return_value=mock_result):
+    app = client.application
+    sm = app.session_manager
+    meta = sm.load_meta(sid)
+    page_path = os.path.join(sm.get_page_dir(sid), meta["pages"][0]["path"])
+    os.remove(page_path)
+
+    resp = client.post(f"/analyze/{sid}")
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["pages"][0]["classification"] == "Complex"
+    assert data["pages"][0]["error"] == "Page file missing"
+```
+
+- [ ] **Step 4: Add already-analyzed skip test in `crop_app/tests/test_analysis.py`**
+
+```python
+def test_analyze_skips_pages_with_existing_classification(app_with_session):
+    client, sid = app_with_session
+
+    app = client.application
+    sm = app.session_manager
+    meta = sm.load_meta(sid)
+    meta["pages"][0]["classification"] = "Simple"
+    sm.save_meta(sid, meta)
+
+    with patch("app.analyze_page") as mock_analyze:
         resp = client.post(f"/analyze/{sid}")
 
     assert resp.status_code == 200
+    mock_analyze.assert_not_called()
     data = resp.get_json()
     assert data["pages"][0]["classification"] == "Simple"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 5: Run analysis tests to verify they fail before implementation**
 
-Run: `pytest crop_app/tests/test_analysis.py::test_analyze_endpoint_returns_classification -v`
-Expected: FAIL - classification key not found
+Run: `pytest crop_app/tests/test_analysis.py -v`
+Expected: FAIL because `app.py` still uses `complex` and `labels`.
 
-- [ ] **Step 3: Update analyze_session in app.py with ALL required changes**
+- [ ] **Step 6: Update `/annotate` page mapping in `crop_app/app.py`**
 
-Replace all references to `complex` and `labels` with `classification`:
+In `annotate_page`, replace:
 
-**Line 72-73** (annotate_page route — maps page data to template):
 ```python
-# Replace:
 "complex": p["complex"],
 "labels": p["labels"],
-
-# With:
-"classification": p["classification"],
 ```
 
-**Line 156** (analyze_session — skip already-analyzed pages):
-```python
-# Replace:
-if page_info["complex"] is not None:
+with:
 
-# With:
-if page_info.get("classification") is not None:
+```python
+"classification": p.get("classification"),
 ```
 
-**Line 161-162** (analyze_session — missing file fallback):
+Use `.get()` here so old sessions created before this change do not crash the annotation route.
+
+- [ ] **Step 7: Update upload metadata in `crop_app/app.py` for PDF pages**
+
+In the PDF upload branch, replace:
+
 ```python
-# Replace:
-page_info["complex"] = False
-page_info["labels"] = []
-
-# With:
-page_info["classification"] = "Complex"
-```
-
-**Line 167-168** (analyze_session — store analysis result):
-```python
-# Replace:
-page_info["complex"] = result["complex"]
-page_info["labels"] = result["labels"]
-
-# With:
-page_info["classification"] = result["classification"]
-```
-
-**Line 172** (analyze_session — PDF upgrade trigger):
-```python
-# Replace:
-if result["complex"] and page_info.get("pdf_path") and page_info.get("pdf_page") is not None:
-
-# With:
-if result["classification"] == "Complex" and page_info.get("pdf_path") and page_info.get("pdf_page") is not None:
-```
-
-**Upload route** (lines 111, 128 — metadata schema for new pages):
-```python
-# Replace:
 "complex": None,
 "labels": [],
+```
 
-# With:
+with:
+
+```python
 "classification": None,
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 8: Update upload metadata in `crop_app/app.py` for image pages**
+
+In the image upload branch, replace:
+
+```python
+"complex": None,
+"labels": [],
+```
+
+with:
+
+```python
+"classification": None,
+```
+
+- [ ] **Step 9: Update already-analyzed skip check in `crop_app/app.py`**
+
+In `analyze_session`, replace:
+
+```python
+if page_info["complex"] is not None:
+    continue
+```
+
+with:
+
+```python
+if page_info.get("classification") is not None:
+    continue
+```
+
+This avoids `KeyError` for migrated or older session metadata.
+
+- [ ] **Step 10: Update missing-page fallback in `crop_app/app.py`**
+
+Replace:
+
+```python
+page_info["complex"] = False
+page_info["labels"] = []
+page_info["error"] = "Page file missing"
+```
+
+with:
+
+```python
+page_info["classification"] = "Complex"
+page_info["error"] = "Page file missing"
+```
+
+Missing files default to `Complex` because errors and uncertain pages should not be silently treated as simple.
+
+- [ ] **Step 11: Update result storage in `crop_app/app.py`**
+
+Replace:
+
+```python
+page_info["complex"] = result["complex"]
+page_info["labels"] = result["labels"]
+```
+
+with:
+
+```python
+page_info["classification"] = result.get("classification", "Complex")
+```
+
+Using `.get(..., "Complex")` prevents a crash if an older/mock analyzer response lacks the field.
+
+- [ ] **Step 12: Update PDF high-resolution upgrade condition in `crop_app/app.py`**
+
+Replace:
+
+```python
+if result["complex"] and page_info.get("pdf_path") and page_info.get("pdf_page") is not None:
+```
+
+with:
+
+```python
+if page_info["classification"] == "Complex" and page_info.get("pdf_path") and page_info.get("pdf_page") is not None:
+```
+
+Use `page_info["classification"]`, not `result["classification"]`, because Step 11 normalizes missing/invalid analyzer results to `Complex`.
+
+- [ ] **Step 13: Run analysis tests**
 
 Run: `pytest crop_app/tests/test_analysis.py -v`
-Expected: All tests PASS
+Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 14: Commit**
 
 ```bash
 git add crop_app/app.py crop_app/tests/test_analysis.py
-git commit -m "feat: update app to use classification field"
+git commit -m "feat: store page analysis classification"
 ```
 
 ---
 
-## Task 3: Update Frontend Integration
+## Task 3: Update Frontend Rendering for Classification States
 
 **Files:**
 - Modify: `crop_app/static/js/upload.js`
 - Modify: `crop_app/static/css/style.css`
 
 **Interfaces:**
-- Consumes: `classification` from page metadata
-- Produces: UI showing Simple/Complex markers
+- Consumes page metadata field: `classification: null | "Simple" | "Complex"`
+- Produces UI badges: `Pending`, `Simple`, or `Complex`
 
-- [ ] **Step 1: Update upload.js badge logic**
+- [ ] **Step 1: Update badge logic in `crop_app/static/js/upload.js`**
 
-Replace the badge logic at `upload.js:153-163` to handle all three states (null/Complex/Simple):
+Replace the existing `if (page.complex === true) { ... } else { ... }` block with:
 
 ```javascript
-// Replace:
-if (page.complex === true) {
-  badge.classList.add("badge-complex");
-  badge.textContent = "Complex";
-  card.classList.add("page-complex");
-  card.addEventListener("click", () => {
-    window.location = `/annotate/${sessionId}?page=${index}`;
-  });
-} else {
-  badge.classList.add("badge-simple");
-  badge.textContent = "Simple";
-}
-
-// With:
 if (page.classification === "Complex") {
   badge.classList.add("badge-complex");
   badge.textContent = "Complex";
@@ -342,16 +490,18 @@ if (page.classification === "Complex") {
   badge.classList.add("badge-simple");
   badge.textContent = "Simple";
 } else {
-  // classification is null — analysis not yet run
   badge.classList.add("badge-pending");
   badge.textContent = "Pending";
 }
 ```
 
-- [ ] **Step 2: Add CSS classes for Simple and Pending badges**
+Do not leave a fallthrough state with no badge.
+
+- [ ] **Step 2: Add CSS classes to `crop_app/static/css/style.css` if missing**
+
+If `.badge.badge-simple` is already present, keep existing styling. Ensure these classes exist:
 
 ```css
-/* Add to crop_app/static/css/style.css */
 .badge.badge-simple {
   background: #e6f4ea;
   color: #1e7e34;
@@ -361,126 +511,84 @@ if (page.classification === "Complex") {
   background: #f0f0f0;
   color: #666;
 }
-
-.page-card.page-simple {
-  border-left: 3px solid #1e7e34;
-}
 ```
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Verify no frontend references to `page.complex` remain**
+
+Run: `rg "page\.complex|page\.labels" crop_app/static crop_app/templates`
+Expected: No matches.
+
+- [ ] **Step 4: Commit**
 
 ```bash
 git add crop_app/static/js/upload.js crop_app/static/css/style.css
-git commit -m "feat: update frontend for Simple/Complex classification"
+git commit -m "feat: render page classification badges"
 ```
 
 ---
 
-## Task 4: Update Test Data Files
+## Task 4: Update Remaining Test Fixtures and Metadata Shapes
 
 **Files:**
 - Modify: `crop_app/tests/test_app.py`
 - Modify: `crop_app/tests/test_crop_routes.py`
 - Modify: `crop_app/tests/test_session_manager.py`
-- Modify: `crop_app/tests/test_analysis.py`
 
-- [ ] **Step 1: Update test_analysis.py existing tests**
+**Interfaces:**
+- Test metadata pages use `classification`, not `complex` or `labels`.
 
-Replace all existing test assertions on `complex` and `labels` with `classification`:
+- [ ] **Step 1: Update `crop_app/tests/test_app.py`**
 
-**test_analyze_endpoint_returns_updated_meta** (line 94-100):
+Replace page fixture dictionaries like:
+
 ```python
-# Replace:
-mock_result = {"complex": True, "labels": ["table"], "error": None}
-# ...
-assert data["pages"][0]["complex"] is True
-assert "table" in data["pages"][0]["labels"]
-
-# With:
-mock_result = {"classification": "Complex", "error": None}
-# ...
-assert data["pages"][0]["classification"] == "Complex"
+{"path": "page_000.png", "complex": True, "labels": ["table"], "crops": []}
 ```
 
-**test_complex_non_pdf_page_does_not_trigger_upgrade** (line 129-136):
-```python
-# Replace:
-mock_result = {"complex": True, "labels": ["table"], "error": None}
-# ...
-assert data["pages"][0]["complex"] is True
+with:
 
-# With:
-mock_result = {"classification": "Complex", "error": None}
-# ...
-assert data["pages"][0]["classification"] == "Complex"
+```python
+{"path": "page_000.png", "classification": "Complex", "crops": []}
 ```
 
-**test_simple_pdf_page_does_not_trigger_upgrade** (line 143-150):
-```python
-# Replace:
-mock_result = {"complex": False, "labels": [], "error": None}
-# ...
-assert data["pages"][0]["complex"] is False
+- [ ] **Step 2: Update `crop_app/tests/test_crop_routes.py`**
 
-# With:
-mock_result = {"classification": "Simple", "error": None}
-# ...
-assert data["pages"][0]["classification"] == "Simple"
+Replace:
+
+```python
+{"path": "page_000.png", "complex": True, "labels": ["table"], "crops": []}
 ```
 
-**test_complex_pdf_page_triggers_upgrade** (line 156-167):
-```python
-# Replace:
-mock_result = {"complex": True, "labels": ["table"], "error": None}
-# ...
-assert data["pages"][0]["complex"] is True
+with:
 
-# With:
-mock_result = {"classification": "Complex", "error": None}
-# ...
-assert data["pages"][0]["classification"] == "Complex"
+```python
+{"path": "page_000.png", "classification": "Complex", "crops": []}
 ```
 
-**test_upgrade_failure_records_error** (line 174-180):
-```python
-# Replace:
-mock_result = {"complex": True, "labels": ["table"], "error": None}
-# ...
-assert data["pages"][0]["complex"] is True
+- [ ] **Step 3: Update `crop_app/tests/test_session_manager.py`**
 
-# With:
-mock_result = {"classification": "Complex", "error": None}
-# ...
-assert data["pages"][0]["classification"] == "Complex"
+Replace:
+
+```python
+data = {"pages": [{"path": "p0.png", "complex": True, "labels": ["table"]}]}
 ```
 
-**Fixture data** (lines 33-34, 79-80 — page metadata in app_with_session and app_with_pdf_session):
-```python
-# Replace:
-"complex": None,
-"labels": [],
+with:
 
-# With:
-"classification": None,
+```python
+data = {"pages": [{"path": "p0.png", "classification": "Complex"}]}
 ```
 
-- [ ] **Step 2: Update test_app.py**
+- [ ] **Step 4: Run all crop_app tests**
 
-Replace `"complex": True` with `"classification": "Complex"` and `"complex": False` with `"classification": "Simple"` in test fixtures.
-
-- [ ] **Step 3: Update test_crop_routes.py**
-
-Replace `"complex": True, "labels": ["table"]` with `"classification": "Complex"`.
-
-- [ ] **Step 4: Update test_session_manager.py**
-
-Replace `"complex": True, "labels": ["table"]` with `"classification": "Complex"`.
+Run: `pytest crop_app/tests/ -v`
+Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crop_app/tests/test_app.py crop_app/tests/test_crop_routes.py crop_app/tests/test_session_manager.py crop_app/tests/test_analysis.py
-git commit -m "test: update test data to use classification field"
+git add crop_app/tests/test_app.py crop_app/tests/test_crop_routes.py crop_app/tests/test_session_manager.py
+git commit -m "test: update fixtures for classification metadata"
 ```
 
 ---
@@ -490,44 +598,89 @@ git commit -m "test: update test data to use classification field"
 **Files:**
 - Modify: `docs/superpowers/specs/2026-07-05-brochure-crop-tool-design.md`
 
-- [ ] **Step 1: Update design spec**
+**Interfaces:**
+- Documentation describes `classification: "Simple" | "Complex"`, not `complex`/`labels`.
 
-Document the new classification criteria and response format.
+- [ ] **Step 1: Update analysis contract in the design spec**
 
-- [ ] **Step 2: Commit**
+Replace the old prompt contract:
 
-```bash
-git add docs/superpowers/specs/2026-07-05-brochure-crop-tool-design.md
-git commit -m "docs: update spec with Simple/Complex classification"
+```markdown
+- Prompt instructs the model to return structured JSON: `{"complex": bool, "labels": [...]}`
+- Labels include: `table`, `swatch_grid`, `image_grid`, `text_grid`, `feature_matrix`, `stat_cards`, `technical_drawing`, `none`
+- Pages where `complex == true` are flagged
 ```
 
----
+with:
 
-## Task 6: Integration Testing
-
-**Files:**
-- Run: Full test suite
-
-- [ ] **Step 1: Run all tests**
-
-```bash
-pytest crop_app/tests/ -v
+```markdown
+- Prompt instructs the model to return structured JSON: `{"classification": "Simple" | "Complex"}`
+- A page is `Simple` only when at least one positive indicator is true and both negative/general constraints are true.
+- Positive indicators: image-only with no text, less than 60% text overall, simple tables without sub-sections/spans/merges and less than 60% text, or all text bold/large (>18pt approximately).
+- Negative/general constraints: no excessive/complex symbols and confidently scannable by a small/cheap vision LLM.
+- Pages where `classification == "Complex"` are upgraded to 300 DPI and highlighted for manual cropping.
+- Pages where `classification == "Simple"` remain at 150 DPI.
 ```
 
-- [ ] **Step 2: Verify no regressions**
+- [ ] **Step 2: Run documentation grep checks**
+
+Run: `rg '"complex"|"labels"|complex == true|complexity labels' docs/superpowers/specs/2026-07-05-brochure-crop-tool-design.md`
+Expected: No stale API-contract references. General prose using "complex" as an adjective is acceptable only if it does not describe the old JSON schema.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git commit -m "test: add integration tests for Simple/Complex classification"
+git add docs/superpowers/specs/2026-07-05-brochure-crop-tool-design.md
+git commit -m "docs: document Simple Complex classification contract"
 ```
+
+---
+
+## Task 6: Final Integration Verification
+
+**Files:**
+- Verify repository state only.
+
+- [ ] **Step 1: Verify no stale runtime references remain**
+
+Run: `rg 'page_info\["complex"\]|result\["complex"\]|p\["complex"\]|p\["labels"\]|page\.complex|page\.labels|"labels": \[|"complex":' crop_app`
+Expected: No matches, except inside comments only if they are explaining removed legacy code. Prefer removing such comments too.
+
+- [ ] **Step 2: Run full crop app test suite**
+
+Run: `pytest crop_app/tests/ -v`
+Expected: PASS.
+
+- [ ] **Step 3: Run table extractor tests to ensure unrelated package was not broken**
+
+Run: `pytest table_extractor/tests/ -v`
+Expected: PASS.
+
+- [ ] **Step 4: Run lint/type checks if configured**
+
+Check available commands first:
+
+Run: `ls`
+Expected: inspect whether this repo has tooling files such as `pyproject.toml`, `setup.cfg`, `tox.ini`, or `Makefile`.
+
+If a lint/typecheck command is configured, run it. If none is configured, record "No configured lint/typecheck command found" in the implementation summary.
+
+- [ ] **Step 5: Commit only if verification caused file changes**
+
+If no files changed during verification, do not create an empty commit.
 
 ---
 
 ## Verification Checklist
 
-- [ ] All unit tests pass
-- [ ] Integration tests pass
-- [ ] Manual testing confirms correct behavior
-- [ ] Documentation updated
-- [ ] Branch pushed to remote
+- [ ] LLM parser defaults invalid responses to `Complex`.
+- [ ] LLM API exception fallback returns `classification: "Complex"`.
+- [ ] New upload metadata initializes `classification: None`.
+- [ ] Analyze route skips already-classified pages using `page_info.get("classification")`.
+- [ ] Missing page files default to `classification: "Complex"`.
+- [ ] PDF pages upgrade only when normalized page classification is `"Complex"`.
+- [ ] Upload frontend renders `Pending`, `Simple`, and `Complex` states.
+- [ ] No runtime references remain to `complex`/`labels` as metadata keys.
+- [ ] `pytest crop_app/tests/ -v` passes.
+- [ ] `pytest table_extractor/tests/ -v` passes.
+- [ ] Lint/typecheck commands were run if configured, or absence was recorded.

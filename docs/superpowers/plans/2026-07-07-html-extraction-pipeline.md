@@ -388,17 +388,12 @@ def extract_crop_as_html(crop_image: Image.Image, model: str) -> str:
     return result[0]
 
 
-def run_extraction(session_id: str, sm, crop_root: str, model: str) -> str:
-    """Run full HTML extraction across all pages/crops of a session and return final HTML.
+def run_extraction(session_id: str, sm, crop_root: str, model: str):
+    """Run full HTML extraction, yielding progress dicts and the final HTML document.
 
-    Args:
-        session_id: the session UUID
-        sm: a SessionManager instance (from crop_app)
-        crop_root: path to the crop root directory (crop_app.config['CROP_DIR'])
-        model: model ID to use for LLM calls
-
-    Returns:
-        Complete HTML document string (ready to write to disk).
+    Yields:
+        {"status": "progress", "page": int, "totalPages": int, "log": str} — during extraction
+        {"status": "done", "html": str} — final assembled HTML document
     """
     from table_extractor.html_assembler import assemble_full_document
 
@@ -410,15 +405,27 @@ def run_extraction(session_id: str, sm, crop_root: str, model: str) -> str:
     page_dir = sm.get_page_dir(session_id)
     session_files = meta.get("files", [])
     title = session_files[0] if session_files else f"Session {session_id[:8]}"
+    total_pages = len(pages)
 
     pages_data = []
 
-    for page_info in pages:
+    for page_idx, page_info in enumerate(pages):
+        yield {
+            "status": "progress",
+            "page": page_idx,
+            "totalPages": total_pages,
+            "log": f"Processing Page {page_idx + 1} of {total_pages}...",
+        }
+
         parts = []
         classification = page_info.get("classification")
-        crops = page_info.get("crops") or []
+        if classification is None:
+            classification = "Complex" if page_info.get("complex") else "Simple"
 
-        if classification == "Simple" or len(crops) == 0:
+        crops = page_info.get("crops") or []
+        is_complex = classification == "Complex"
+
+        if not is_complex or len(crops) == 0:
             page_path = os.path.join(page_dir, page_info["path"])
             if os.path.exists(page_path):
                 try:
@@ -433,12 +440,21 @@ def run_extraction(session_id: str, sm, crop_root: str, model: str) -> str:
                 parts.append(f'<div class="error-region">Page file not found: {page_info["path"]}</div>')
         else:
             sorted_crops = sorted(crops, key=lambda c: c.get("bbox", [0, 0, 0, 0])[1])
-            for crop_info in sorted_crops:
+            total_crops = len(sorted_crops)
+            for crop_idx, crop_info in enumerate(sorted_crops):
                 crop_filename = (
                     crop_info.get("filename")
                     or crop_info.get("path")
                     or crop_info.get("crop_filename")
                 )
+                yield {
+                    "status": "progress",
+                    "page": page_idx,
+                    "totalPages": total_pages,
+                    "crop": crop_idx + 1,
+                    "totalCrops": total_crops,
+                    "log": f"  - Extracting crop {crop_idx + 1}/{total_crops} (Page {page_idx + 1})...",
+                }
                 if not crop_filename:
                     parts.append('<div class="error-region">Crop missing filename reference</div>')
                     continue
@@ -459,7 +475,16 @@ def run_extraction(session_id: str, sm, crop_root: str, model: str) -> str:
 
         pages_data.append({"html": "\n".join(parts)})
 
-    return assemble_full_document(pages_data, title)
+    yield {
+        "status": "progress",
+        "page": total_pages,
+        "totalPages": total_pages,
+        "log": "Assembling final HTML document...",
+    }
+
+    result_html = assemble_full_document(pages_data, title)
+
+    yield {"status": "done", "html": result_html}
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -933,47 +958,50 @@ def resolve_footnotes(page_html: str) -> str:
     Footnote resolution operates per-page. Cross-page footnotes are out of scope.
     """
     match = re.search(
-        r'<(aside|div|ol)[^>]*\bclass\s*=\s*"[^"]*\bfootnotes\b[^"]*"[^>]*>',
+        r'<(aside|div|ol)([^>]*\bclass\s*=\s*"[^"]*\bfootnotes\b[^"]*"[^>]*)>(.*?)</\1>',
         page_html,
+        re.DOTALL,
     )
     if not match:
         return page_html
 
     tag_name = match.group(1)
-    block_start = match.start()
-    pre_html = page_html[:block_start]
-    footnote_html = page_html[block_start:]
+    tag_attrs = match.group(2)
+    block_content = match.group(3)
 
-    entries = re.findall(r'<p[^>]*>(.*?)</p>', footnote_html, re.DOTALL)
+    pre_html = page_html[:match.start()]
+    post_html = page_html[match.end():]
+
+    entries = re.findall(r'<p[^>]*>(.*?)</p>', block_content, re.DOTALL)
     if not entries:
         return page_html
 
-    footnote_data = []
-    for entry in entries:
+    new_entries = []
+    for idx, entry in enumerate(entries):
         marker_match = re.search(r'<sup>([^<]+)</sup>\s*(.*)', entry, re.DOTALL)
         if marker_match:
-            footnote_data.append((marker_match.group(1), marker_match.group(2)))
+            marker = marker_match.group(1)
+            fn_text = marker_match.group(2)
+            fn_id = f"fn-{idx}"
+            src_id = f"src-fn-{idx}"
 
-    for idx, (marker, fn_text) in enumerate(footnote_data):
-        fn_id = f"fn-{idx}"
-        src_id = f"src-fn-{idx}"
+            back_link = f' <a href="#{src_id}" class="footnote-back">\u21a9</a>'
+            ref = (
+                f'<a href="#{fn_id}" id="{src_id}" class="footnote-ref" '
+                f'data-footnote="{fn_text.strip()}"><sup>{marker}</sup></a>'
+            )
 
-        back_link = f' <a href="#{src_id}" class="footnote-back">\u21a9</a>'
-        ref = f'<a href="#{fn_id}" id="{src_id}" class="footnote-ref" data-footnote="{fn_text.strip()}"><sup>{marker}</sup></a>'
+            escaped_marker = re.escape(marker)
+            pattern = re.compile(r"<sup>\s*" + escaped_marker + r"\s*</sup>")
+            pre_html, n_subs = pattern.subn(ref, pre_html, count=1)
 
-        escaped = re.escape(marker)
-        pattern = re.compile(r"<sup>\s*" + escaped + r"\s*</sup>")
-        pre_html, n_subs = pattern.subn(ref, pre_html, count=1)
+            new_entries.append(f'<p id="{fn_id}"><sup>{marker}</sup> {fn_text}{back_link}</p>')
+        else:
+            new_entries.append(f"<p>{entry}</p>")
 
-        new_entry = f'<p id="{fn_id}"><sup>{marker}</sup> {fn_text}{back_link}</p>'
-        footnote_html = footnote_html.replace(f"<p>{entry}</p>", new_entry, 1)
+    new_block = f"<{tag_name}{tag_attrs}>\n  " + "\n  ".join(new_entries) + f"\n</{tag_name}>"
 
-        if n_subs == 0:
-            escaped = re.escape(marker)
-            pattern = re.compile(r"<sup>(\s*" + escaped + r"\s*)</sup>")
-            pre_html, _ = pattern.subn(ref, pre_html, count=1)
-
-    return pre_html + footnote_html
+    return pre_html + new_block + post_html
 
 
 def build_page_html(page_index: int, total_pages: int, content_html: str) -> str:
@@ -1326,14 +1354,24 @@ def test_extract_progress_sse_streams_starting(client_ready_session):
 
     with pytest.MonkeyPatch.context() as m:
         import table_extractor.html_extractor as hx
-        m.setattr(hx, "run_extraction", lambda **kw: "<html><body>ok</body></html>")
+        # Mock run_extraction as an iterable generator of event dicts
+        m.setattr(
+            hx,
+            "run_extraction",
+            lambda **kw: iter([
+                {"status": "starting"},
+                {"status": "progress", "page": 0, "totalPages": 1, "log": "Processing..."},
+                {"status": "done", "html": "<html><body>ok</body></html>"},
+            ]),
+        )
 
         resp = client.get(f"/extract-progress/{sid}")
         assert resp.status_code == 200
         assert resp.content_type.startswith("text/event-stream")
 
         data = b"".join(resp.iter_encoded()).decode()
-        assert "starting" in data or "done" in data
+        assert "starting" in data
+        assert "done" in data
 
 
 def test_extracted_html_serving_requires_file(client_ready_session):
@@ -1404,23 +1442,27 @@ import sys
             from table_extractor.html_extractor import run_extraction
 
             try:
-                result_html = run_extraction(
+                for event in run_extraction(
                     session_id=session_id,
                     sm=_sm,
                     crop_root=app.config["CROP_DIR"],
                     model=os.environ.get("DATA_EXTRACTION_MODEL_ID", "qwen/qwen3.7-plus"),
-                )
+                ):
+                    if event["status"] == "done":
+                        result_html = event["html"]
+                        out_dir = os.path.join(
+                            os.path.dirname(os.path.abspath(__file__)),
+                            "static", "extracted", session_id,
+                        )
+                        os.makedirs(out_dir, exist_ok=True)
+                        out_path = os.path.join(out_dir, "extraction.html")
+                        with open(out_path, "w", encoding="utf-8") as f:
+                            f.write(result_html)
 
-                out_dir = os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)),
-                    "static", "extracted", session_id,
-                )
-                os.makedirs(out_dir, exist_ok=True)
-                out_path = os.path.join(out_dir, "extraction.html")
-                with open(out_path, "w", encoding="utf-8") as f:
-                    f.write(result_html)
+                        yield f"data: {json.dumps({'status': 'done'})}\n\n"
+                    else:
+                        yield f"data: {json.dumps(event)}\n\n"
 
-                yield f"data: {json.dumps({'status': 'done'})}\n\n"
             except Exception as e:
                 import traceback
                 tb = traceback.format_exc()

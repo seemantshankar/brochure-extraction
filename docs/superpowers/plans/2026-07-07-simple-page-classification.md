@@ -30,10 +30,15 @@
 
 | File | Responsibility |
 |------|----------------|
-| `crop_app/llm.py` | Update `ANALYSIS_PROMPT`, add `classify_page()` function, update parsing |
+| `crop_app/llm.py` | Update `ANALYSIS_PROMPT`, remove `LABELS` constant, update parsing |
 | `crop_app/app.py` | Update `analyze_session()` to use new classification field |
+| `crop_app/static/js/upload.js` | Update badge logic for Simple/Complex |
+| `crop_app/static/css/style.css` | Update badge classes |
 | `crop_app/tests/test_llm.py` | Add tests for new classification parsing and response handling |
 | `crop_app/tests/test_analysis.py` | Update tests to use classification field |
+| `crop_app/tests/test_app.py` | Update test data |
+| `crop_app/tests/test_crop_routes.py` | Update test data |
+| `crop_app/tests/test_session_manager.py` | Update test data |
 
 ### New Files
 
@@ -44,7 +49,7 @@ None - using existing test infrastructure.
 ## Task 1: Update LLM Prompt and Response Schema
 
 **Files:**
-- Modify: `crop_app/llm.py:24-53` (ANALYSIS_PROMPT and related constants)
+- Modify: `crop_app/llm.py:22-53` (ANALYSIS_PROMPT, LABELS constant removal, related constants)
 - Modify: `crop_app/llm.py:56-126` (analyze_page function and _parse_response)
 
 **Interfaces:**
@@ -72,12 +77,29 @@ def test_parse_response_invalid():
     assert result["error"] is not None
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: Update existing tests in test_llm.py**
+
+Replace existing tests that check `complex` and `labels` with new tests for `classification`:
+
+```python
+# Replace test_parse_response_complex_true and test_parse_response_complex_false
+def test_parse_response_complex_true():
+    raw = '{"classification": "Complex"}'
+    result = _parse_response(raw)
+    assert result["classification"] == "Complex"
+
+def test_parse_response_complex_false():
+    raw = '{"classification": "Simple"}'
+    result = _parse_response(raw)
+    assert result["classification"] == "Simple"
+```
+
+- [ ] **Step 3: Run tests to verify they fail**
 
 Run: `pytest crop_app/tests/test_llm.py::test_parse_response_simple -v`
 Expected: FAIL with "classification" key not found
 
-- [ ] **Step 3: Update ANALYSIS_PROMPT**
+- [ ] **Step 4: Update ANALYSIS_PROMPT**
 
 ```python
 ANALYSIS_PROMPT = """You are analyzing a single page of a product brochure / spec sheet.
@@ -102,7 +124,7 @@ Do NOT include any other text, explanation, or markdown formatting outside the J
 """
 ```
 
-- [ ] **Step 4: Update _parse_response function**
+- [ ] **Step 5: Update _parse_response function**
 
 ```python
 def _parse_response(raw: str) -> dict:
@@ -130,7 +152,7 @@ def _parse_response(raw: str) -> dict:
     return {"classification": "Complex", "error": f"Failed to parse: {raw[:200]}"}
 ```
 
-- [ ] **Step 5: Update analyze_page return type**
+- [ ] **Step 6: Update analyze_page return type**
 
 ```python
 def analyze_page(image_path: str) -> dict:
@@ -144,12 +166,12 @@ def analyze_page(image_path: str) -> dict:
     # ... except block returns {"classification": "Complex", "error": str(e)}
 ```
 
-- [ ] **Step 6: Run tests to verify they pass**
+- [ ] **Step 7: Run tests to verify they pass**
 
 Run: `pytest crop_app/tests/test_llm.py -v`
 Expected: All tests PASS
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add crop_app/llm.py crop_app/tests/test_llm.py
@@ -223,12 +245,12 @@ if result["complex"] and page_info.get("pdf_path") ...
 if result["classification"] == "Complex" and page_info.get("pdf_path") ...
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [ ] **Step 6: Run tests to verify they pass**
 
 Run: `pytest crop_app/tests/test_analysis.py -v`
 Expected: All tests PASS
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add crop_app/app.py crop_app/tests/test_analysis.py
@@ -240,44 +262,74 @@ git commit -m "feat: update app to use classification field"
 ## Task 3: Update Frontend Integration
 
 **Files:**
-- Modify: `crop_app/templates/annotate.html` (if needed for display)
-- Modify: `crop_app/templates/sessions.html` (if needed for page list)
+- Modify: `crop_app/static/js/upload.js`
+- Modify: `crop_app/static/css/style.css`
 
 **Interfaces:**
 - Consumes: `classification` from page metadata
 - Produces: UI showing Simple/Complex markers
 
-- [ ] **Step 1: Review frontend templates**
-
-Check if templates need updates to display `classification` instead of `complex`. Current templates use `complex` field for badges.
-
-- [ ] **Step 2: Update annotate.html if needed**
-
-The `all_pages` data passed to template should include classification:
+- [ ] **Step 1: Update upload.js badge logic**
 
 ```javascript
-// In app.py annotate_page route:
-"classification": p["classification"],
+// Replace:
+if (page.complex === true) {
+  badge.classList.add("badge-complex");
+  card.classList.add("page-complex");
+}
+
+// With:
+if (page.classification === "Complex") {
+  badge.classList.add("badge-complex");
+  card.classList.add("page-complex");
+} else if (page.classification === "Simple") {
+  badge.classList.add("badge-simple");
+  card.classList.add("page-simple");
+}
 ```
 
-- [ ] **Step 3: Update sessions.html if needed**
+- [ ] **Step 2: Review and update CSS classes**
 
-Update the page list display to show Simple/Complex badges.
+No changes needed to `style.css` - existing `.badge-complex` and `.page-complex` classes should work. Optionally add `.badge-simple` and `.page-simple` if needed.
 
-- [ ] **Step 4: Run manual test**
-
-Start Flask server and verify pages display correctly.
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add crop_app/templates/*.html
-git commit -m "chore: update frontend templates for classification field"
+git add crop_app/static/js/upload.js crop_app/static/css/style.css
+git commit -m "feat: update frontend for Simple/Complex classification"
 ```
 
 ---
 
-## Task 4: Update Documentation
+## Task 4: Update Test Data Files
+
+**Files:**
+- Modify: `crop_app/tests/test_app.py`
+- Modify: `crop_app/tests/test_crop_routes.py`
+- Modify: `crop_app/tests/test_session_manager.py`
+
+- [ ] **Step 1: Update test_app.py**
+
+Replace `"complex": True` with `"classification": "Complex"` and `"complex": False` with `"classification": "Simple"` in test fixtures.
+
+- [ ] **Step 2: Update test_crop_routes.py**
+
+Replace `"complex": True, "labels": ["table"]` with `"classification": "Complex"`.
+
+- [ ] **Step 3: Update test_session_manager.py**
+
+Replace `"complex": True, "labels": ["table"]` with `"classification": "Complex"`.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add crop_app/tests/test_app.py crop_app/tests/test_crop_routes.py crop_app/tests/test_session_manager.py
+git commit -m "test: update test data to use classification field"
+```
+
+---
+
+## Task 5: Update Documentation
 
 **Files:**
 - Modify: `docs/superpowers/specs/2026-07-05-brochure-crop-tool-design.md`
@@ -295,7 +347,7 @@ git commit -m "docs: update spec with Simple/Complex classification"
 
 ---
 
-## Task 5: Integration Testing
+## Task 6: Integration Testing
 
 **Files:**
 - Run: Full test suite

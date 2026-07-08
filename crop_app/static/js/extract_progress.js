@@ -32,7 +32,13 @@ document.addEventListener("DOMContentLoaded", function () {
   function appendLog(message) {
     var entry = document.createElement("div");
     entry.className = "log-entry";
-    entry.innerHTML = '<span class="log-time">[' + getTimestamp() + ']</span> ' + message;
+    var timeSpan = document.createElement("span");
+    timeSpan.className = "log-time";
+    timeSpan.textContent = "[" + getTimestamp() + "] ";
+    var msgSpan = document.createElement("span");
+    msgSpan.textContent = message;
+    entry.appendChild(timeSpan);
+    entry.appendChild(msgSpan);
     actionLog.appendChild(entry);
     actionLog.scrollTop = actionLog.scrollHeight;
   }

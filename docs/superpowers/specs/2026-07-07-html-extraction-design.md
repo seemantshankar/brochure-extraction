@@ -18,10 +18,8 @@ Each crop (or full page for Simple-classified pages) is sent to a vision LLM wit
 | `html_assembler.py` | `table_extractor/` | Assemble page fragments, handle footnotes, produce final HTML |
 | `prompts/html/` | `table_extractor/prompts/html/` | HTML extraction prompts (master + type hints) |
 | Flask route | `crop_app/app.py` (new routes) | Trigger extraction, SSE progress, serve output |
-| `extract_progress.html` | `crop_app/templates/` | Progress page shown during extraction |
-| `extract_result.html` | `crop_app/templates/` | Result page with "Open" and "Back" buttons |
-| `extracted/` | `crop_app/static/` | Output directory for generated HTML files |
-| `extract_html.js` | `crop_app/static/` | Frontend: SSE listener, button state management |
+| `extract_progress.html` | `crop_app/templates/` | Progress page shown during extraction; shows gauge, log, and result actions |
+| `extract_progress.js` | `crop_app/static/js/` | Frontend SSE listener, progress gauge, and log rendering |
 
 ### Data Flow
 
@@ -232,16 +230,17 @@ Button DISABLED <->  NO crops committed  OR  draft.length > 0 (uncommitted chang
   ```
 - On completion, auto-redirects to the result page.
 
-**Step 2 — Result Page** (`templates/extract_result.html`):
+**Step 2 — Result Page** (`templates/extract_progress.html`):
 - Animated success checkmark on completion.
 - **Extraction Metrics Card**: processing time, page count, crops processed, errors (if any).
 - Primary CTA: "Open HTML Document" (opens `/static/extracted/<session_id>/extraction.html` in a **new browser tab**, prominent brand color button).
 - Secondary actions: "Back to Annotations", "Download HTML".
 
 **Step 3 — HTML Output** (`static/extracted/<session_id>/extraction.html`):
-- Self-contained HTML file with embedded CSS.
+- Self-contained HTML file with embedded CSS/JS.
 - Opens in a new browser tab.
 - User can save/save-as from the browser.
+- Generated markup is sanitized and scripts are emitted only from the trusted application templates, so arbitrary model-generated script cannot execute when the file is opened in the browser.
 
 ### Progress Updates via SSE
 
@@ -295,7 +294,7 @@ The output HTML is a premium, interactive document reader. All styling is embedd
 
 ### CSS Styling for Process Pages
 
-These apply to the Flask app pages (`extract_progress.html`, `extract_result.html`), not the generated HTML.
+These apply to the Flask app progress page (`extract_progress.html`), not the generated HTML.
 
 **Progress Page (`extract_progress.html`):**
 - Animated circular progress gauge or modern linear progress bar with smooth transitions.
@@ -307,7 +306,7 @@ These apply to the Flask app pages (`extract_progress.html`, `extract_result.htm
 - Timestamped log lines scroll in as SSE events arrive.
 - Visual state: idle → extracting (pulsing progress) → complete (checkmark) or error (red X).
 
-**Result Page (`extract_result.html`):**
+**Result Page (`extract_progress.html`):**
 - Animated success checkmark on completion.
 - **Extraction Metrics Card**: processing time, page count, crops processed, errors (if any).
 - Primary CTA: "Open HTML Document" (opens in new tab, brand color button).
@@ -316,7 +315,7 @@ These apply to the Flask app pages (`extract_progress.html`, `extract_result.htm
 
 ## Caching
 
-Reuse existing cache mechanism from `table_extractor/cache.py`. Cache keys: SHA256 hash of crop image + stage name (`html_extract`) + model name. Cached HTML fragments stored as plain text files in `.stage_cache/`. Re-running extraction on unchanged crops is near-instant.
+Reuse existing cache mechanism from `table_extractor/cache.py`. Cache keys for `html_extract` include the SHA256 hash of the crop image, stage name (`html_extract`), model name, and a hash of the loaded prompt bundle (`load_full_prompt()`). This ensures prompt edits invalidate stale cached HTML. Cached HTML fragments are stored as plain text files in `.stage_cache/`. Re-running extraction on unchanged crops and prompts is near-instant.
 
 ## Model Configuration
 
@@ -341,8 +340,7 @@ Reuse existing cache mechanism from `table_extractor/cache.py`. Cache keys: SHA2
 | `table_extractor/prompts/html/extract_section_heading.txt` | Type hint |
 | `table_extractor/prompts/html/extract_other.txt` | Type hint |
 | `crop_app/templates/extract_progress.html` | Progress page |
-| `crop_app/templates/extract_result.html` | Result page |
-| `crop_app/static/extract_html.js` | Frontend SSE + button state |
+| `crop_app/static/js/extract_progress.js` | Frontend SSE + progress UI |
 | `crop_app/static/extracted/` | Output directory (gitignored) |
 
 ## Existing Files to Modify

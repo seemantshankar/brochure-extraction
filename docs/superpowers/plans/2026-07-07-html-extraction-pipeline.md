@@ -193,7 +193,7 @@ git commit -m "feat: add HTML extraction prompt files"
   - `load_full_prompt() -> str`
   - `clean_up_html_fragment(raw: str) -> str`
   - `extract_crop_as_html(crop_image: PIL.Image, model: str) -> str`
-  - `run_extraction(session_id: str, sm: SessionManager, crop_root: str, model: str) -> str` (full end-to-end orchestration; consumed by Flask route in Task 5)
+  - `run_extraction(session_id: str, sm: SessionManager, crop_root: str, model: str, max_workers: int = None, cancel_event: threading.Event = None) -> Generator[dict, None, None]` (full end-to-end orchestration; yields progress events and a final `{status: "done", html: str}` payload; consumed by Flask SSE route in Task 5)
 
 - [ ] **Step 1: Write tests for load_full_prompt and clean_up_html_fragment**
 

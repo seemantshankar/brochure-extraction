@@ -36,7 +36,7 @@
     .log-time { color:var(--text-muted); margin-right:8px; }
     .success-block { text-align:center; }
     .success-icon { font-size:3.5rem; color:#22c55e; margin-bottom:8px; }
-    .error-block { padding:16px; background:rgba(233,69,96,0.1); border:1px solid var(--accent); border-radius:var(--radius); color:var(--text-primary); margin-bottom:16px; text-align:left; }
+    .error-block { padding:16px; background:rgba(233,69,96,0.1); border:1px solid #e94560; border-radius:var(--radius); color:var(--text-primary); margin-bottom:16px; text-align:left; }
     .extract-actions { margin-top:24px; display:flex; gap:12px; justify-content:center; flex-wrap:wrap; }
     .extract-actions a, .extract-actions button {
       padding:12px 24px; border-radius:var(--radius); font-size:0.9rem; font-weight:600;
@@ -91,7 +91,7 @@
   </div>
 
   <script>
-    window.SESSION_ID = "{{ session_id }}";
+    window.SESSION_ID = {{ session_id|tojson }};
   </script>
   <script src="/static/js/extract_progress.js"></script>
 </body>

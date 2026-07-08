@@ -1,5 +1,6 @@
 import os
 import re
+import html
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
 
@@ -51,7 +52,8 @@ def resolve_footnotes(page_html: str) -> str:
             back_link = f' <a href="#{src_id}" class="footnote-back">\u21a9</a>'
             ref = (
                 f'<a href="#{fn_id}" id="{src_id}" class="footnote-ref" '
-                f'data-footnote="{fn_text.strip()}"><sup>{marker}</sup></a>'
+                f'data-footnote="{html.escape(fn_text.strip(), quote=True)}">'
+                f'<sup>{html.escape(marker)}</sup></a>'
             )
 
             escaped_marker = re.escape(marker)

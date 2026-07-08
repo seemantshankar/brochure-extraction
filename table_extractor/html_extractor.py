@@ -1,10 +1,12 @@
 import io
 import os
 import re
+import html
 import base64
 import logging
 import concurrent.futures
 import threading
+from functools import lru_cache
 from PIL import Image
 from openai import OpenAI
 from table_extractor.cache import cached_call
@@ -14,6 +16,8 @@ logger = logging.getLogger(__name__)
 PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "prompts", "html")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1"
+
+EXTRACTION_MAX_WORKERS = int(os.environ.get("EXTRACTION_MAX_WORKERS", "4"))
 
 _client = None
 
@@ -35,6 +39,7 @@ def load_prompt(filename: str) -> str:
         return f.read()
 
 
+@lru_cache(maxsize=1)
 def load_full_prompt() -> str:
     master = load_prompt("_master.txt")
     hint_files = sorted(
@@ -65,6 +70,18 @@ def clean_up_html_fragment(raw: str) -> str:
         text = text.strip()
 
     return text
+
+
+def _get_classification(page_info: dict) -> str:
+    classification = page_info.get("classification")
+    if classification is None:
+        classification = "Complex" if page_info.get("complex") else "Simple"
+    return classification
+
+
+def _get_sorted_crops(page_info: dict) -> list:
+    crops = page_info.get("crops") or []
+    return sorted(crops, key=lambda c: c.get("bbox", [0, 0, 0, 0])[1])
 
 
 def extract_crop_as_html(crop_image: Image.Image, model: str) -> str:
@@ -113,6 +130,7 @@ def extract_crop_as_html(crop_image: Image.Image, model: str) -> str:
             model=model,
             fn=_call,
             force=False,
+            extra_key=system_prompt,
         )
     except Exception as e:
         logger.error(f"LLM extraction failed for crop (model={model}): {e}")
@@ -121,11 +139,23 @@ def extract_crop_as_html(crop_image: Image.Image, model: str) -> str:
     return result[0]
 
 
-def run_extraction(session_id: str, sm, crop_root: str, model: str):
+def run_extraction(
+    session_id: str,
+    sm,
+    crop_root: str,
+    model: str,
+    max_workers: int = None,
+    cancel_event: threading.Event = None,
+):
     """Run full HTML extraction, yielding progress dicts and the final HTML document.
+
+    Args:
+        cancel_event: Optional threading.Event. When set, the extraction loop
+            stops submitting work and yields a "cancelled" status before exiting.
 
     Yields:
         {"status": "progress", "page": int, "totalPages": int, "log": str} — during extraction
+        {"status": "cancelled"} — emitted when cancel_event is set mid-flight
         {"status": "done", "html": str} — final assembled HTML document
     """
     from table_extractor.html_assembler import assemble_full_document
@@ -143,11 +173,8 @@ def run_extraction(session_id: str, sm, crop_root: str, model: str):
     tasks = []
 
     for page_idx, page_info in enumerate(pages):
-        classification = page_info.get("classification")
-        if classification is None:
-            classification = "Complex" if page_info.get("complex") else "Simple"
-
-        crops = page_info.get("crops") or []
+        classification = _get_classification(page_info)
+        crops = _get_sorted_crops(page_info)
         is_complex = classification == "Complex"
 
         if not is_complex or len(crops) == 0:
@@ -159,8 +186,7 @@ def run_extraction(session_id: str, sm, crop_root: str, model: str):
                 "is_simple": True,
             })
         else:
-            sorted_crops = sorted(crops, key=lambda c: c.get("bbox", [0, 0, 0, 0])[1])
-            for crop_idx, crop_info in enumerate(sorted_crops):
+            for crop_idx, crop_info in enumerate(crops):
                 crop_filename = (
                     crop_info.get("filename")
                     or crop_info.get("path")
@@ -201,7 +227,7 @@ def run_extraction(session_id: str, sm, crop_root: str, model: str):
             elif not crop_filename:
                 fragment = '<div class="error-region">Crop missing filename reference</div>'
             else:
-                fragment = f'<div class="error-region">Crop file not found: {crop_filename}</div>'
+                fragment = f'<div class="error-region">Crop file not found: {html.escape(crop_filename)}</div>'
         else:
             try:
                 with Image.open(image_path) as img:
@@ -213,7 +239,10 @@ def run_extraction(session_id: str, sm, crop_root: str, model: str):
             except Exception as e:
                 logger.error(f"Extraction failed for page={page_idx} crop={crop_idx}: {e}")
                 path_label = "page" if is_simple else crop_filename
-                fragment = f'<div class="error-region">Extraction failed for {path_label}: {e}</div>'
+                fragment = (
+                    f'<div class="error-region">Extraction failed for '
+                    f'{html.escape(str(path_label))}: {html.escape(str(e))}</div>'
+                )
 
         return {
             "page_idx": page_idx,
@@ -221,33 +250,49 @@ def run_extraction(session_id: str, sm, crop_root: str, model: str):
             "fragment": fragment,
         }
 
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    workers = max_workers if max_workers is not None else EXTRACTION_MAX_WORKERS
+    cancelled = False
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_task = {executor.submit(_process_task, t): t for t in tasks}
 
-        for future in concurrent.futures.as_completed(future_to_task):
-            task = future_to_task[future]
-            try:
-                result = future.result()
-            except Exception as e:
-                result = {
-                    "page_idx": task["page_idx"],
-                    "crop_idx": task["crop_idx"],
-                    "fragment": f'<div class="error-region">Thread execution failed: {e}</div>',
+        try:
+            for future in concurrent.futures.as_completed(future_to_task):
+                if cancel_event is not None and cancel_event.is_set():
+                    cancelled = True
+                    for f in future_to_task:
+                        f.cancel()
+                    break
+
+                task = future_to_task[future]
+                try:
+                    result = future.result()
+                except Exception as e:
+                    result = {
+                        "page_idx": task["page_idx"],
+                        "crop_idx": task["crop_idx"],
+                        "fragment": f'<div class="error-region">Thread execution failed: {html.escape(str(e))}</div>',
+                    }
+
+                with results_lock:
+                    results[(result["page_idx"], result["crop_idx"])] = result["fragment"]
+
+                with completed_lock:
+                    completed_count["count"] += 1
+                    completed = completed_count["count"]
+
+                yield {
+                    "status": "progress",
+                    "page": completed,
+                    "totalPages": total_tasks,
+                    "log": f"Extracted {completed}/{total_tasks} region(s)...",
                 }
+        finally:
+            for f in future_to_task:
+                f.cancel()
 
-            with results_lock:
-                results[(result["page_idx"], result["crop_idx"])] = result["fragment"]
-
-            with completed_lock:
-                completed_count["count"] += 1
-                completed = completed_count["count"]
-
-            yield {
-                "status": "progress",
-                "page": completed,
-                "totalPages": total_tasks,
-                "log": f"Extracted {completed}/{total_tasks} region(s)...",
-            }
+    if cancelled:
+        yield {"status": "cancelled"}
+        return
 
     yield {
         "status": "progress",
@@ -258,19 +303,15 @@ def run_extraction(session_id: str, sm, crop_root: str, model: str):
 
     pages_data = []
     for page_idx, page_info in enumerate(pages):
-        classification = page_info.get("classification")
-        if classification is None:
-            classification = "Complex" if page_info.get("complex") else "Simple"
-
-        crops = page_info.get("crops") or []
+        classification = _get_classification(page_info)
+        crops = _get_sorted_crops(page_info)
         is_complex = classification == "Complex"
 
         if not is_complex or len(crops) == 0:
             pages_data.append({"html": results.get((page_idx, None), "")})
         else:
-            sorted_crops = sorted(crops, key=lambda c: c.get("bbox", [0, 0, 0, 0])[1])
             parts = []
-            for crop_idx in range(len(sorted_crops)):
+            for crop_idx in range(len(crops)):
                 fragment = results.get((page_idx, crop_idx), "")
                 if fragment:
                     parts.append(fragment)

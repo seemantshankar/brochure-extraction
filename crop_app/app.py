@@ -4,6 +4,7 @@ import json
 import shutil
 import logging
 import datetime
+import threading
 from flask import Flask, request, jsonify, redirect, url_for, send_file, render_template, Response
 
 logger = logging.getLogger(__name__)
@@ -12,6 +13,11 @@ from session_manager import SessionManager
 from crop_manager import CropManager
 from pdf_converter import pdf_to_pages, upgrade_page_to_hires
 from llm import analyze_page
+
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+from table_extractor.html_extractor import run_extraction
 
 UPLOAD_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
 
@@ -431,8 +437,7 @@ def create_app():
         def generate():
             yield f"data: {json.dumps({'status': 'starting'})}\n\n"
 
-            sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-            from table_extractor.html_extractor import run_extraction
+            cancel_event = threading.Event()
 
             try:
                 for event in run_extraction(
@@ -440,6 +445,7 @@ def create_app():
                     sm=_sm,
                     crop_root=app.config["CROP_DIR"],
                     model=os.environ.get("DATA_EXTRACTION_MODEL_ID", "qwen/qwen3.7-plus"),
+                    cancel_event=cancel_event,
                 ):
                     if event["status"] == "done":
                         result_html = event["html"]
@@ -456,6 +462,10 @@ def create_app():
                     else:
                         yield f"data: {json.dumps(event)}\n\n"
 
+            except GeneratorExit:
+                cancel_event.set()
+                logger.info("Client disconnected from SSE stream for session %s", session_id)
+                raise
             except Exception as e:
                 import traceback
                 tb = traceback.format_exc()
@@ -466,10 +476,19 @@ def create_app():
 
     @app.route("/extracted/<session_id>/extraction.html", methods=["GET"])
     def serve_extracted_html(session_id):
-        out_path = os.path.join(
+        _sm = app.session_manager
+        if not _sm.session_exists(session_id):
+            return "Session not found", 404
+
+        base_dir = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
-            "static", "extracted", session_id, "extraction.html",
+            "static", "extracted",
         )
+        out_path = os.path.realpath(
+            os.path.join(base_dir, session_id, "extraction.html")
+        )
+        if not out_path.startswith(os.path.realpath(base_dir)):
+            return "Invalid session id", 400
         if not os.path.exists(out_path):
             return "Extraction not found. Please run extraction first.", 404
         return send_file(out_path, mimetype="text/html")

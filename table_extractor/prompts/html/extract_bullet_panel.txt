@@ -1,0 +1,1 @@
+Type: Bullet Panel (trim/feature list). Render as nested <ul>. Top-level items are major features; sub-bullets are sub-features. Preserve bullet characters (●, ✓, -) as they appear in the image — do not convert between types. Trim names should be rendered as <strong>Trim Name</strong> at the start of a <li>.

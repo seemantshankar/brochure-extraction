@@ -1,0 +1,6 @@
+Type: Footnote Block (disclaimers, notes). Wrap the entire block in <aside class="footnotes">. Each individual footnote entry must be wrapped in a <p> tag starting with its marker as <sup>marker</sup> followed by the footnote text. Example:
+<aside class="footnotes">
+  <p><sup>*</sup> Standard across all variants.</p>
+  <p><sup>**</sup> Optional, dealer-installed accessory.</p>
+</aside>
+Preserve every marker exactly as shown (* † ‡ ** ¹ ² # etc.).

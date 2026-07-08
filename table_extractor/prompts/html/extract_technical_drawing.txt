@@ -1,0 +1,1 @@
+Type: Technical Drawing / Diagram. Extract all visible measurement labels and their corresponding numeric values with units (mm, cm, degrees, etc.). Render as a <dl> key-value list. Do not reproduce the drawing or diagram itself — capture only the text data (dimension labels, values, units).

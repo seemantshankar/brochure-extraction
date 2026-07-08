@@ -553,6 +553,29 @@ header h1 {
   cursor: not-allowed;
 }
 
+.extract-btn {
+  flex-shrink: 0;
+  margin: 0 16px 12px;
+  padding: 12px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background var(--transition), opacity var(--transition);
+}
+
+.extract-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.extract-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 /* ====================================
    8. MODAL (Trim)
    ==================================== */

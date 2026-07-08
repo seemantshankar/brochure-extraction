@@ -1,0 +1,1 @@
+Type: Swatch Grid (color specification table). Each row represents a trim/color option. Preserve column alignment and exact color names. Use a standard <table> with headers matching the brochure's column structure (e.g., "Variant", "Colour", "Roof", "Body").

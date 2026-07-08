@@ -1,0 +1,1 @@
+Type: Stat Cards. Render each stat as a <div class="stat-card"> containing <dl><dt>LABEL</dt><dd>VALUE UNIT</dd></dl>. If the cards were arranged together, wrap them in a <div class="stat-cards"> container. Preserve exact values and units as shown in the image.

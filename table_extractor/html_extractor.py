@@ -3,6 +3,8 @@ import os
 import re
 import base64
 import logging
+import concurrent.futures
+import threading
 from PIL import Image
 from openai import OpenAI
 from table_extractor.cache import cached_call
@@ -11,6 +13,8 @@ logger = logging.getLogger(__name__)
 
 PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "prompts", "html")
 
+OPENROUTER_URL = "https://openrouter.ai/api/v1"
+
 _client = None
 
 
@@ -18,8 +22,8 @@ def _get_client():
     global _client
     if _client is None:
         _client = OpenAI(
-            base_url=os.environ.get("OPENAI_BASE_URL", "https://openrouter.ai/api/v1"),
-            api_key=os.environ.get("OPENROUTER_API_KEY", "mock_key"),
+            base_url=OPENROUTER_URL,
+            api_key=os.environ.get("OPENROUTER_API_KEY", ""),
             timeout=120.0,
         )
     return _client
@@ -136,17 +140,9 @@ def run_extraction(session_id: str, sm, crop_root: str, model: str):
     title = session_files[0] if session_files else f"Session {session_id[:8]}"
     total_pages = len(pages)
 
-    pages_data = []
+    tasks = []
 
     for page_idx, page_info in enumerate(pages):
-        yield {
-            "status": "progress",
-            "page": page_idx,
-            "totalPages": total_pages,
-            "log": f"Processing Page {page_idx + 1} of {total_pages}...",
-        }
-
-        parts = []
         classification = page_info.get("classification")
         if classification is None:
             classification = "Complex" if page_info.get("complex") else "Simple"
@@ -155,61 +151,130 @@ def run_extraction(session_id: str, sm, crop_root: str, model: str):
         is_complex = classification == "Complex"
 
         if not is_complex or len(crops) == 0:
-            page_path = os.path.join(page_dir, page_info["path"])
-            if os.path.exists(page_path):
-                try:
-                    page_img = Image.open(page_path)
-                    fragment = extract_crop_as_html(page_img, model)
-                    if fragment:
-                        parts.append(fragment)
-                except Exception as e:
-                    logger.error(f"Simple page extraction failed: {e}")
-                    parts.append(f'<div class="error-region">Extraction failed: {e}</div>')
-            else:
-                parts.append(f'<div class="error-region">Page file not found: {page_info["path"]}</div>')
+            tasks.append({
+                "page_idx": page_idx,
+                "crop_idx": None,
+                "image_path": os.path.join(page_dir, page_info["path"]),
+                "crop_filename": None,
+                "is_simple": True,
+            })
         else:
             sorted_crops = sorted(crops, key=lambda c: c.get("bbox", [0, 0, 0, 0])[1])
-            total_crops = len(sorted_crops)
             for crop_idx, crop_info in enumerate(sorted_crops):
                 crop_filename = (
                     crop_info.get("filename")
                     or crop_info.get("path")
                     or crop_info.get("crop_filename")
                 )
-                yield {
-                    "status": "progress",
-                    "page": page_idx,
-                    "totalPages": total_pages,
-                    "crop": crop_idx + 1,
-                    "totalCrops": total_crops,
-                    "log": f"  - Extracting crop {crop_idx + 1}/{total_crops} (Page {page_idx + 1})...",
-                }
-                if not crop_filename:
-                    parts.append('<div class="error-region">Crop missing filename reference</div>')
-                    continue
-                crop_path = os.path.join(crop_root, session_id, crop_filename)
-                if not os.path.exists(crop_path):
-                    parts.append(f'<div class="error-region">Crop file not found: {crop_filename}</div>')
-                    continue
-                try:
-                    crop_img = Image.open(crop_path)
-                    fragment = extract_crop_as_html(crop_img, model)
-                    if fragment:
-                        parts.append(fragment)
-                except Exception as e:
-                    logger.error(f"Crop extraction failed for {crop_filename}: {e}")
-                    parts.append(
-                        f'<div class="error-region">Extraction failed for {crop_filename}: {e}</div>'
-                    )
+                tasks.append({
+                    "page_idx": page_idx,
+                    "crop_idx": crop_idx,
+                    "image_path": os.path.join(crop_root, session_id, crop_filename) if crop_filename else None,
+                    "crop_filename": crop_filename,
+                    "is_simple": False,
+                })
 
-        pages_data.append({"html": "\n".join(parts)})
+    total_tasks = len(tasks)
 
     yield {
         "status": "progress",
-        "page": total_pages,
-        "totalPages": total_pages,
+        "page": 0,
+        "totalPages": total_tasks,
+        "log": f"Starting parallel extraction of {total_tasks} region(s) across {total_pages} page(s)...",
+    }
+
+    results = {}
+    results_lock = threading.Lock()
+    completed_count = {"count": 0}
+    completed_lock = threading.Lock()
+
+    def _process_task(task):
+        page_idx = task["page_idx"]
+        crop_idx = task["crop_idx"]
+        image_path = task["image_path"]
+        crop_filename = task["crop_filename"]
+        is_simple = task["is_simple"]
+
+        if not image_path or not os.path.exists(image_path):
+            if is_simple:
+                fragment = '<div class="error-region">Page file not found</div>'
+            elif not crop_filename:
+                fragment = '<div class="error-region">Crop missing filename reference</div>'
+            else:
+                fragment = f'<div class="error-region">Crop file not found: {crop_filename}</div>'
+        else:
+            try:
+                with Image.open(image_path) as img:
+                    crop_img = img.copy()
+                    crop_img.filename = image_path
+                fragment = extract_crop_as_html(crop_img, model)
+                if not fragment:
+                    fragment = ""
+            except Exception as e:
+                logger.error(f"Extraction failed for page={page_idx} crop={crop_idx}: {e}")
+                path_label = "page" if is_simple else crop_filename
+                fragment = f'<div class="error-region">Extraction failed for {path_label}: {e}</div>'
+
+        return {
+            "page_idx": page_idx,
+            "crop_idx": crop_idx,
+            "fragment": fragment,
+        }
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future_to_task = {executor.submit(_process_task, t): t for t in tasks}
+
+        for future in concurrent.futures.as_completed(future_to_task):
+            task = future_to_task[future]
+            try:
+                result = future.result()
+            except Exception as e:
+                result = {
+                    "page_idx": task["page_idx"],
+                    "crop_idx": task["crop_idx"],
+                    "fragment": f'<div class="error-region">Thread execution failed: {e}</div>',
+                }
+
+            with results_lock:
+                results[(result["page_idx"], result["crop_idx"])] = result["fragment"]
+
+            with completed_lock:
+                completed_count["count"] += 1
+                completed = completed_count["count"]
+
+            yield {
+                "status": "progress",
+                "page": completed,
+                "totalPages": total_tasks,
+                "log": f"Extracted {completed}/{total_tasks} region(s)...",
+            }
+
+    yield {
+        "status": "progress",
+        "page": total_tasks,
+        "totalPages": total_tasks,
         "log": "Assembling final HTML document...",
     }
+
+    pages_data = []
+    for page_idx, page_info in enumerate(pages):
+        classification = page_info.get("classification")
+        if classification is None:
+            classification = "Complex" if page_info.get("complex") else "Simple"
+
+        crops = page_info.get("crops") or []
+        is_complex = classification == "Complex"
+
+        if not is_complex or len(crops) == 0:
+            pages_data.append({"html": results.get((page_idx, None), "")})
+        else:
+            sorted_crops = sorted(crops, key=lambda c: c.get("bbox", [0, 0, 0, 0])[1])
+            parts = []
+            for crop_idx in range(len(sorted_crops)):
+                fragment = results.get((page_idx, crop_idx), "")
+                if fragment:
+                    parts.append(fragment)
+            pages_data.append({"html": "\n".join(parts)})
 
     result_html = assemble_full_document(pages_data, title)
 

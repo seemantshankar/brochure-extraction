@@ -33,10 +33,13 @@ The old `extraction.html` path returns `index.html` as a backward-compat fallbac
 `table_extractor/prompts/html/_master.txt` gets one additional constraint appended after the existing Operational Constraints:
 
 ```
- 8. Field Wrapping: Wrap every price, phone number, URL, email, date, address, and
-    vehicle model name in <span class="field" data-field="PRICE|PHONE|URL|EMAIL|DATE|ADDRESS|MODEL">…</span>.
-    Do not alter text, layout, or structure around the value. If a value is ambiguous
-    between two field types, use data-field="TEXT".
+  8. Field Wrapping: Wrap every price, phone number, URL, email, date, address,
+     vehicle model name, and feature-matrix symbol in
+     <span class="field" data-field="PRICE|PHONE|URL|EMAIL|DATE|ADDRESS|MODEL|SYMBOL">…</span>.
+     Feature-matrix symbols cover indicators for feature availability in a trim, such as
+     checkmarks, dots, crosses, or similar glyphs used in comparison tables. Do not alter
+     text, layout, or structure around the value. If a value is ambiguous between two
+     field types, use data-field="TEXT".
 ```
 
 ### Field types
@@ -50,6 +53,7 @@ The old `extraction.html` path returns `index.html` as a backward-compat fallbac
 | `DATE` | `01 Jan 2026`, `2025-08-15` |
 | `ADDRESS` | dealer addresses, showroom locations |
 | `MODEL` | `WagonR`, `Vxi`, `ZXi Plus`, `Diesel` variants |
+| `SYMBOL` | checkmarks, dots, crosses, or other glyphs in feature-matrix cells |
 | `TEXT` | ambiguous values (fallback) |
 
 This is purely additive — the existing extraction behavior (table reconstitution, footnote mapping, 100% coverage) is unchanged.

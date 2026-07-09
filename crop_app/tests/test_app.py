@@ -95,3 +95,35 @@ def test_delete_missing_session_returns_404(client):
     resp = client.delete('/sessions/does-not-exist')
     assert resp.status_code == 404
 
+
+def test_save_page_endpoint(isolated_client, tmp_path):
+    app, client = isolated_client
+
+    # Route writes to app.config["EXTRACTED_DIR"] when set, so keep it hermetic.
+    extracted_dir = tmp_path / "extracted"
+    app.config["EXTRACTED_DIR"] = str(extracted_dir)
+
+    sid = app.session_manager.create_session()
+    app.session_manager.save_meta(sid, {
+        "files": ["brochure.pdf"],
+        "pages": [
+            {"path": "page_000.png", "classification": "Simple", "crops": []}
+        ],
+    })
+
+    session_dir = extracted_dir / sid
+    os.makedirs(session_dir, exist_ok=True)
+    with open(os.path.join(session_dir, "page-0.html"), "w", encoding="utf-8") as f:
+        f.write("<p>original</p>")
+
+    resp = client.post(
+        f"/save-page/{sid}/0",
+        data="<p>edited</p>",
+        content_type="text/html",
+    )
+    assert resp.status_code == 200
+    assert resp.get_json() == {"status": "ok"}
+
+    with open(os.path.join(session_dir, "page-0.html"), "r", encoding="utf-8") as f:
+        assert f.read() == "<p>edited</p>"
+

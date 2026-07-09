@@ -61,6 +61,9 @@ def create_app():
 
     app.config["UPLOAD_DIR"] = os.path.join(project_root, "uploads")
     app.config["CROP_DIR"] = os.path.join(project_root, "crops")
+    app.config["EXTRACTED_DIR"] = os.path.join(
+        base_dir, "static", "extracted"
+    )
     app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024
 
     sm = SessionManager(app.config["UPLOAD_DIR"], app.config["CROP_DIR"])
@@ -448,16 +451,6 @@ def create_app():
                     cancel_event=cancel_event,
                 ):
                     if event["status"] == "done":
-                        result_html = event["html"]
-                        out_dir = os.path.join(
-                            os.path.dirname(os.path.abspath(__file__)),
-                            "static", "extracted", session_id,
-                        )
-                        os.makedirs(out_dir, exist_ok=True)
-                        out_path = os.path.join(out_dir, "extraction.html")
-                        with open(out_path, "w", encoding="utf-8") as f:
-                            f.write(result_html)
-
                         yield f"data: {json.dumps({'status': 'done'})}\n\n"
                     else:
                         yield f"data: {json.dumps(event)}\n\n"
@@ -474,23 +467,93 @@ def create_app():
 
         return Response(generate(), mimetype="text/event-stream")
 
+    def _save_page_html(session_id, page_idx, edited_html):
+        """Persist edited per-page HTML to
+        <EXTRACTED_DIR>/<session_id>/page-<page_idx>.html.
+
+        Returns a Flask response tuple (body, status). Shared by the
+        POST /save-page route and the POST branch of serve_extracted_page so
+        the per-page edit JS works whether it POSTs to /save-page/... or to the
+        page URL itself."""
+        out_dir = app.config["EXTRACTED_DIR"]
+        base_dir = os.path.realpath(out_dir)
+        session_dir = os.path.realpath(os.path.join(base_dir, session_id))
+        if not session_dir.startswith(base_dir):
+            return jsonify({"status": "error", "message": "Invalid session id"}), 400
+
+        out_path = os.path.realpath(
+            os.path.join(session_dir, f"page-{page_idx}.html")
+        )
+        if not out_path.startswith(session_dir):
+            return jsonify({"status": "error", "message": "Invalid page index"}), 400
+
+        os.makedirs(session_dir, exist_ok=True)
+        try:
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write(edited_html)
+        except OSError as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+        return jsonify({"status": "ok"})
+
+    @app.route("/save-page/<session_id>/<int:page_idx>", methods=["POST"])
+    def save_page(session_id, page_idx):
+        _sm = app.session_manager
+        if not _sm.session_exists(session_id):
+            return jsonify({"status": "error", "message": "Session not found"}), 404
+
+        meta = _sm.load_meta(session_id)
+        total_pages = len(meta.get("pages", []))
+        if page_idx < 0 or page_idx >= total_pages:
+            return jsonify({"status": "error", "message": "Invalid page index"}), 400
+
+        edited_html = request.get_data(as_text=True)
+        if edited_html is None:
+            return jsonify({"status": "error", "message": "Empty body"}), 400
+
+        return _save_page_html(session_id, page_idx, edited_html)
+
     @app.route("/extracted/<session_id>/extraction.html", methods=["GET"])
     def serve_extracted_html(session_id):
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return "Session not found", 404
 
-        base_dir = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "static", "extracted",
-        )
-        out_path = os.path.realpath(
-            os.path.join(base_dir, session_id, "extraction.html")
-        )
-        if not out_path.startswith(os.path.realpath(base_dir)):
-            return "Invalid session id", 400
-        if not os.path.exists(out_path):
+        base_dir = app.config["EXTRACTED_DIR"]
+        session_dir = os.path.realpath(os.path.join(base_dir, session_id))
+        if not os.path.isdir(session_dir):
             return "Extraction not found. Please run extraction first.", 404
+
+        index_path = os.path.join(session_dir, "index.html")
+        if os.path.exists(index_path):
+            return send_file(index_path, mimetype="text/html")
+
+        return "Extraction not found. Please run extraction first.", 404
+
+    @app.route("/extracted/<session_id>/page-<int:page_idx>.html", methods=["GET", "POST"])
+    def serve_extracted_page(session_id, page_idx):
+        _sm = app.session_manager
+        if not _sm.session_exists(session_id):
+            return "Session not found", 404
+
+        if request.method == "POST":
+            edited_html = request.get_data(as_text=True)
+            if edited_html is None:
+                return jsonify({"status": "error", "message": "Empty body"}), 400
+            return _save_page_html(session_id, page_idx, edited_html)
+
+        base_dir = app.config["EXTRACTED_DIR"]
+        session_dir = os.path.realpath(os.path.join(base_dir, session_id))
+        if not os.path.isdir(session_dir):
+            return "Extraction not found. Please run extraction first.", 404
+
+        out_path = os.path.realpath(
+            os.path.join(session_dir, f"page-{page_idx}.html")
+        )
+        if not out_path.startswith(session_dir):
+            return "Invalid page index", 400
+        if not os.path.exists(out_path):
+            return "Page not found.", 404
         return send_file(out_path, mimetype="text/html")
 
     return app

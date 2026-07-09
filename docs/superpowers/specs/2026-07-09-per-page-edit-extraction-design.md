@@ -34,12 +34,14 @@ The old `extraction.html` path returns `index.html` as a backward-compat fallbac
 
 ```
   8. Field Wrapping: Wrap every price, phone number, URL, email, date, address,
-     vehicle model name, and feature-matrix symbol in
-     <span class="field" data-field="PRICE|PHONE|URL|EMAIL|DATE|ADDRESS|MODEL|SYMBOL">…</span>.
+     vehicle model name, feature-matrix symbol, mileage figure, and specification value in
+     <span class="field" data-field="PRICE|PHONE|URL|EMAIL|DATE|ADDRESS|MODEL|SYMBOL|MILEAGE|SPEC">…</span>.
      Feature-matrix symbols cover indicators for feature availability in a trim, such as
-     checkmarks, dots, crosses, or similar glyphs used in comparison tables. Do not alter
-     text, layout, or structure around the value. If a value is ambiguous between two
-     field types, use data-field="TEXT".
+     checkmarks, dots, crosses, or similar glyphs used in comparison tables. MILEAGE covers
+     fuel efficiency values with units (e.g. km/l, km/kg). SPEC covers all other numeric or
+     unit-bearing values such as dimensions, weights, engine capacity/output/torque,
+     capacities, warranty figures, and material types. Do not alter text, layout, or structure
+     around the value. If a value is ambiguous between two field types, use data-field="TEXT".
 ```
 
 ### Field types
@@ -54,6 +56,8 @@ The old `extraction.html` path returns `index.html` as a backward-compat fallbac
 | `ADDRESS` | dealer addresses, showroom locations |
 | `MODEL` | `WagonR`, `Vxi`, `ZXi Plus`, `Diesel` variants |
 | `SYMBOL` | checkmarks, dots, crosses, or other glyphs in feature-matrix cells |
+| `MILEAGE` | `24.43 km/l`, `33.47 km/kg`, fuel efficiency figures with units |
+| `SPEC` | dimensions (3655 mm), weights (825 kg), engine capacity (998 cc), output (50.4 kW), torque (91.1 Nm), capacities (32 L), warranty (3 years), material types (Steel Wheels), colour names |
 | `TEXT` | ambiguous values (fallback) |
 
 This is purely additive — the existing extraction behavior (table reconstitution, footnote mapping, 100% coverage) is unchanged.

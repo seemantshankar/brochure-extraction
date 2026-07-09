@@ -127,3 +127,29 @@ def test_save_page_endpoint(isolated_client, tmp_path):
     with open(os.path.join(session_dir, "page-0.html"), "r", encoding="utf-8") as f:
         assert f.read() == "<p>edited</p>"
 
+
+def test_serve_extracted_page_post_out_of_range_returns_400(isolated_client, tmp_path):
+    app, client = isolated_client
+    extracted_dir = tmp_path / "extracted"
+    app.config["EXTRACTED_DIR"] = str(extracted_dir)
+
+    sid = app.session_manager.create_session()
+    app.session_manager.save_meta(sid, {
+        "files": ["brochure.pdf"],
+        "pages": [
+            {"path": "page_000.png", "classification": "Simple", "crops": []}
+        ],
+    })
+
+    session_dir = extracted_dir / sid
+    os.makedirs(session_dir, exist_ok=True)
+
+    resp = client.post(
+        f"/extracted/{sid}/page-999.html",
+        data="<p>edited</p>",
+        content_type="text/html",
+    )
+    assert resp.status_code == 400
+    assert resp.get_json() == {"status": "error", "message": "Invalid page index"}
+    assert not os.path.exists(os.path.join(session_dir, "page-999.html"))
+

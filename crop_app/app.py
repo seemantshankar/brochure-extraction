@@ -540,6 +540,12 @@ def create_app():
             edited_html = request.get_data(as_text=True)
             if edited_html is None:
                 return jsonify({"status": "error", "message": "Empty body"}), 400
+
+            meta = _sm.load_meta(session_id)
+            total_pages = len(meta.get("pages", []))
+            if page_idx < 0 or page_idx >= total_pages:
+                return jsonify({"status": "error", "message": "Invalid page index"}), 400
+
             return _save_page_html(session_id, page_idx, edited_html)
 
         base_dir = app.config["EXTRACTED_DIR"]

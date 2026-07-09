@@ -37,12 +37,25 @@ document.addEventListener("DOMContentLoaded", function () {
     saveButton.addEventListener("click", function () {
       saveButton.disabled = true;
       saveButton.textContent = "Saving...";
-      var saveRoot = document.body.cloneNode(true);
+      var saveRoot = document.documentElement.cloneNode(true);
       saveRoot.querySelectorAll(".save-btn, .save-toast, .save-error").forEach(function (n) { n.remove(); });
+      saveRoot.querySelectorAll("input.inline-edit-input").forEach(function (inp) {
+        inp.parentNode.replaceChild(document.createTextNode(inp.value != null ? inp.value : ""), inp);
+      });
+      saveRoot.querySelectorAll("[contenteditable]").forEach(function (el) {
+        el.removeAttribute("contenteditable");
+      });
+      saveRoot.querySelectorAll(".inline-edit-input, .edited").forEach(function (el) {
+        el.classList.remove("inline-edit-input", "edited");
+      });
+      var doctype = document.doctype
+        ? new XMLSerializer().serializeToString(document.doctype)
+        : "<!DOCTYPE html>";
+      var fullHtml = doctype + "\n" + saveRoot.outerHTML;
       fetch("", {
         method: "POST",
         headers: { "Content-Type": "text/html" },
-        body: saveRoot.innerHTML,
+        body: fullHtml,
       })
       .then(function (r) { return r.json(); })
       .then(function (data) {
@@ -85,6 +98,7 @@ document.addEventListener("DOMContentLoaded", function () {
       if (textNodes.length === 1 && el.children.length === 0) {
         var input = document.createElement("input");
         input.type = "text";
+        input.setAttribute("value", textNodes[0].nodeValue);
         input.value = textNodes[0].nodeValue;
         input.className = "inline-edit-input";
         textNodes[0].parentNode.replaceChild(input, textNodes[0]);

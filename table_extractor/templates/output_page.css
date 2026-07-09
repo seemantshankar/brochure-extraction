@@ -31,19 +31,22 @@ body {
 .toc-sidebar a:hover { background: #f1f5f9; color: #1e293b; }
 .toc-sidebar a.active { background: #e2e8f0; font-weight: 600; }
 
-.document-canvas { margin-left: 200px; padding: 40px; flex: 1; min-width: 0; }
+.document-canvas { margin-left: 200px; padding: 40px; flex: 1; min-width: 0; width: 0; overflow: hidden; }
 
 .page {
   background: #fff; border-radius: 8px;
   box-shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
   padding: 48px; margin-bottom: 32px; position: relative;
+  width: 100%; max-width: 100%; overflow-wrap: break-word; word-break: break-word;
 }
 .page-label { font-size: 0.75rem; color: #94a3b8; text-align: center; margin-bottom: 24px; }
 .page-divider { border: none; border-top: 2px dashed #e2e8f0; margin: 0 0 32px; }
 
-h1, h2, h3, h4, h5, h6 { margin-bottom: 12px; color: #0f172a; }
+h1, h2, h3, h4, h5, h6 { margin-bottom: 12px; color: #0f172a; word-wrap: break-word; overflow-wrap: break-word; word-break: break-word; }
 
-table { border-collapse: collapse; width: 100%; font-size: 13px; margin-bottom: 20px; }
+p, li, dd, dt { word-wrap: break-word; overflow-wrap: break-word; word-break: break-word; }
+
+table { border-collapse: collapse; width: 100%; max-width: 100%; font-size: 13px; margin-bottom: 20px; table-layout: fixed; }
 .table-scroll-wrap { overflow-x: auto; margin-bottom: 20px; scrollbar-width: thin; }
 .table-scroll-wrap::-webkit-scrollbar { height: 6px; }
 .table-scroll-wrap::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
@@ -57,8 +60,8 @@ table { border-collapse: collapse; width: 100%; font-size: 13px; margin-bottom: 
 .table-container:hover .copy-table-btn { opacity: 1; }
 .copy-table-btn:hover { background: #f8fafc; color: #1e293b; }
 
-th, td { border: 1px solid #d1d5db; padding: 6px 10px; text-align: left; vertical-align: top; }
-th { background: #f5f5f5; font-weight: 600; white-space: nowrap; }
+th, td { border: 1px solid #d1d5db; padding: 6px 10px; text-align: left; vertical-align: top; white-space: normal; word-wrap: break-word; overflow-wrap: break-word; }
+th { background: #f5f5f5; font-weight: 600; }
 tr:hover td { background-color: #f8fafc; }
 tr.section-divider td { font-weight: 700; background: #eef2ff; color: #334155; }
 

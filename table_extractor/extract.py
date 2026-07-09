@@ -89,7 +89,7 @@ EXTRACTION_SCHEMAS = {
     RegionType.TECHNICAL_DRAWING: {
         "type": "object",
         "properties": {
-            "view": {"type": "string", "enum": ["front", "rear", "side", "top"]},
+            "view": {"type": "string", "enum": ["front", "rear", "side", "top", "plan"]},
             "measurements": {
                 "type": "array",
                 "items": {

@@ -117,3 +117,15 @@ class TestAssembleFullDocument:
         pages = [{"html": fn_body}]
         result = assemble_full_document(pages, "Title")
         assert 'class="footnote-ref"' in result
+
+
+def test_index_page_has_page_grid():
+    from table_extractor.html_assembler import write_page_files
+    import tempfile, os
+    with tempfile.TemporaryDirectory() as tmp:
+        write_page_files("idx-test", [{"html": "<p>A</p>"}, {"html": "<p>B</p>"}], "Idx", output_root=tmp)
+        with open(os.path.join(tmp, "idx-test", "index.html"), "r", encoding="utf-8") as f:
+            html = f.read()
+        assert "page-grid" in html
+        assert "page-0.html" in html
+        assert "page-1.html" in html

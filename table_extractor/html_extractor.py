@@ -1,3 +1,4 @@
+"""Extract HTML fragments from brochure crops using an LLM and assemble pages."""
 import io
 import os
 import re
@@ -23,6 +24,7 @@ _client = None
 
 
 def _get_client():
+    """Return a cached OpenAI client pointing at OpenRouter."""
     global _client
     if _client is None:
         _client = OpenAI(
@@ -34,6 +36,7 @@ def _get_client():
 
 
 def load_prompt(filename: str) -> str:
+    """Load a prompt file from the prompts/html directory."""
     filepath = os.path.join(PROMPTS_DIR, filename)
     with open(filepath, "r", encoding="utf-8") as f:
         return f.read()
@@ -41,6 +44,7 @@ def load_prompt(filename: str) -> str:
 
 @lru_cache(maxsize=1)
 def load_full_prompt() -> str:
+    """Combine the master prompt with all extraction hint prompts."""
     master = load_prompt("_master.txt")
     hint_files = sorted(
         f for f in os.listdir(PROMPTS_DIR)
@@ -73,6 +77,7 @@ def clean_up_html_fragment(raw: str) -> str:
 
 
 def _get_classification(page_info: dict) -> str:
+    """Return a page's classification, falling back to the legacy complex flag."""
     classification = page_info.get("classification")
     if classification is None:
         classification = "Complex" if page_info.get("complex") else "Simple"
@@ -80,6 +85,7 @@ def _get_classification(page_info: dict) -> str:
 
 
 def _get_sorted_crops(page_info: dict) -> list:
+    """Return a page's crops sorted by vertical position."""
     crops = page_info.get("crops") or []
     return sorted(crops, key=lambda c: c.get("bbox", [0, 0, 0, 0])[1])
 
@@ -94,6 +100,7 @@ def extract_crop_as_html(crop_image: Image.Image, model: str) -> str:
     b64 = base64.b64encode(img_bytes).decode("utf-8")
 
     def _call():
+        """Make the cached LLM call for this crop."""
         response = _get_client().chat.completions.create(
             model=model,
             messages=[
@@ -146,12 +153,15 @@ def run_extraction(
     model: str,
     max_workers: int = None,
     cancel_event: threading.Event = None,
+    output_root: str = None,
 ):
     """Run full HTML extraction, yielding progress dicts and the final HTML document.
 
     Args:
         cancel_event: Optional threading.Event. When set, the extraction loop
             stops submitting work and yields a "cancelled" status before exiting.
+        output_root: Optional root directory for extracted page files. Defaults
+            to crop_app/static/extracted.
 
     Yields:
         {"status": "progress", "page": int, "totalPages": int, "log": str} — during extraction
@@ -215,6 +225,7 @@ def run_extraction(
     completed_lock = threading.Lock()
 
     def _process_task(task):
+        """Extract HTML for a single page or crop task."""
         page_idx = task["page_idx"]
         crop_idx = task["crop_idx"]
         image_path = task["image_path"]
@@ -317,7 +328,7 @@ def run_extraction(
                     parts.append(fragment)
             pages_data.append({"html": "\n".join(parts)})
 
-    out_dir = os.path.join(
+    out_dir = output_root or os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         "..", "crop_app", "static", "extracted",
     )

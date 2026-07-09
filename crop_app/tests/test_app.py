@@ -1,3 +1,4 @@
+"""Tests for the Flask application routes and endpoints."""
 import pytest
 import os
 import sys
@@ -9,6 +10,7 @@ from session_manager import SessionManager
 
 @pytest.fixture
 def client():
+    """Yield a configured test client."""
     app = create_app()
     app.config["TESTING"] = True
     with app.test_client() as client:
@@ -17,6 +19,7 @@ def client():
 
 @pytest.fixture
 def isolated_client(tmp_path):
+    """Yield an app and client pair using temporary directories."""
     app = create_app()
     app.config["TESTING"] = True
     app.config["UPLOAD_DIR"] = str(tmp_path / "uploads")
@@ -28,23 +31,27 @@ def isolated_client(tmp_path):
 
 
 def test_health_returns_200(client):
+    """Health endpoint returns OK."""
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json == {"status": "ok"}
 
 
 def test_index_returns_200(client):
+    """Root route renders the index page."""
     response = client.get("/")
     assert response.status_code == 200
 
 
 def test_sessions_page_returns_200(client):
+    """Sessions page renders successfully."""
     response = client.get("/sessions")
     assert response.status_code == 200
     assert b"Brochures" in response.data
 
 
 def test_sessions_page_empty_when_no_sessions(isolated_client):
+    """Sessions page shows empty state when no sessions exist."""
     app, client = isolated_client
     response = client.get("/sessions")
     assert response.status_code == 200
@@ -53,6 +60,7 @@ def test_sessions_page_empty_when_no_sessions(isolated_client):
 
 
 def test_sessions_page_lists_existing_sessions(isolated_client):
+    """Sessions page lists uploaded brochure sessions."""
     app, client = isolated_client
     sid = app.session_manager.create_session()
     app.session_manager.save_meta(sid, {
@@ -68,6 +76,7 @@ def test_sessions_page_lists_existing_sessions(isolated_client):
     assert b"1" in resp.data
 
 def test_delete_session_removes_uploads_and_crops(isolated_client):
+    """Deleting a session removes its upload and crop directories."""
     app, client = isolated_client
     sid = app.session_manager.create_session()
     app.session_manager.save_meta(sid, {
@@ -92,11 +101,13 @@ def test_delete_session_removes_uploads_and_crops(isolated_client):
 
 
 def test_delete_missing_session_returns_404(client):
+    """Deleting a nonexistent session returns 404."""
     resp = client.delete('/sessions/does-not-exist')
     assert resp.status_code == 404
 
 
 def test_save_page_endpoint(isolated_client, tmp_path):
+    """Save endpoint overwrites the requested page HTML."""
     app, client = isolated_client
 
     # Route writes to app.config["EXTRACTED_DIR"] when set, so keep it hermetic.
@@ -128,7 +139,32 @@ def test_save_page_endpoint(isolated_client, tmp_path):
         assert f.read() == "<p>edited</p>"
 
 
+def test_save_page_endpoint_rejects_empty_body(isolated_client, tmp_path):
+    """Save endpoint rejects empty request bodies."""
+    app, client = isolated_client
+
+    extracted_dir = tmp_path / "extracted"
+    app.config["EXTRACTED_DIR"] = str(extracted_dir)
+
+    sid = app.session_manager.create_session()
+    app.session_manager.save_meta(sid, {
+        "files": ["brochure.pdf"],
+        "pages": [
+            {"path": "page_000.png", "classification": "Simple", "crops": []}
+        ],
+    })
+
+    resp = client.post(
+        f"/save-page/{sid}/0",
+        data="",
+        content_type="text/html",
+    )
+    assert resp.status_code == 400
+    assert resp.get_json() == {"status": "error", "message": "Empty body"}
+
+
 def test_serve_extracted_page_post_out_of_range_returns_400(isolated_client, tmp_path):
+    """POST to a page outside the valid range returns 400."""
     app, client = isolated_client
     extracted_dir = tmp_path / "extracted"
     app.config["EXTRACTED_DIR"] = str(extracted_dir)

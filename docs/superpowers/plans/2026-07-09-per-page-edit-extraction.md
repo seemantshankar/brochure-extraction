@@ -10,7 +10,9 @@
 
 ## Global Constraints
 
-- No LLM prompt changes — existing extraction output is unmodified.
+- Extraction prompt updates are limited to:
+  - Adding the `"plan"` view enum value for classification.
+  - Requiring contextual labels for numeric measurements in technical drawings.
 - Existing `assemble_full_document` and its templates are preserved unchanged.
 - Each `page-N.html` is fully self-contained with inlined CSS and JS.
 - Path-traversal guards stay in place for all new file-serving routes.
@@ -507,10 +509,12 @@ document.addEventListener("DOMContentLoaded", function () {
     saveButton.addEventListener("click", function () {
       saveButton.disabled = true;
       saveButton.textContent = "Saving...";
-      fetch("", {
+      var match = window.location.pathname.match(/\/extracted\/([^/]+)\/page-(\d+)\.html$/);
+      var saveUrl = match ? "/save-page/" + encodeURIComponent(match[1]) + "/" + match[2] : "";
+      fetch(saveUrl, {
         method: "POST",
         headers: { "Content-Type": "text/html" },
-        body: document.body.innerHTML,
+        body: document.documentElement.outerHTML,
       })
       .then(function (r) { return r.json(); })
       .then(function (data) {

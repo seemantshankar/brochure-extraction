@@ -1,3 +1,4 @@
+"""Flask web application for brochure upload, cropping, analysis, and HTML extraction."""
 import os
 import sys
 import json
@@ -23,6 +24,7 @@ UPLOAD_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
 
 
 def format_datetime(unix_ts):
+    """Format a Unix timestamp as a human-readable date/time string."""
     return datetime.datetime.fromtimestamp(unix_ts).strftime("%b %d, %Y %H:%M")
 
 
@@ -40,6 +42,7 @@ def normalize_classification(page):
 
 
 def create_app():
+    """Create and configure the Flask application."""
     app = Flask(__name__)
     app.jinja_env.filters["datetime"] = format_datetime
 
@@ -71,14 +74,17 @@ def create_app():
 
     @app.route("/health")
     def health():
+        """Return a health check response."""
         return {"status": "ok"}
 
     @app.route("/", methods=["GET"])
     def index():
+        """Render the upload landing page."""
         return render_template("index.html")
 
     @app.route("/annotate/<session_id>", methods=["GET"])
     def annotate_page(session_id):
+        """Render the annotation page for a session."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return "Session not found", 404
@@ -106,6 +112,7 @@ def create_app():
 
     @app.route("/upload", methods=["POST"])
     def upload():
+        """Upload PDF or image files and create a new session."""
         _sm = app.session_manager
         files = request.files.getlist("files")
         if not files or files[0].filename == "":
@@ -168,6 +175,7 @@ def create_app():
 
     @app.route("/analyze/<session_id>", methods=["POST"])
     def analyze_session(session_id):
+        """Analyze all unclassified pages in a session."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return jsonify({"error": "Session not found"}), 404
@@ -210,6 +218,7 @@ def create_app():
 
     @app.route("/session/<session_id>", methods=["GET"])
     def get_session(session_id):
+        """Return session metadata as JSON."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return jsonify({"error": "Session not found"}), 404
@@ -221,6 +230,7 @@ def create_app():
 
     @app.route("/pages/<session_id>/<filename>", methods=["GET"])
     def serve_page(session_id, filename):
+        """Serve a page image file."""
         _sm = app.session_manager
         page_dir = _sm.get_page_dir(session_id)
         filepath = os.path.join(page_dir, filename)
@@ -230,6 +240,7 @@ def create_app():
 
     @app.route("/commit/<session_id>", methods=["POST"])
     def commit_crops(session_id):
+        """Save new crop regions for a page and persist them."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return jsonify({"error": "Session not found"}), 404
@@ -280,6 +291,7 @@ def create_app():
 
     @app.route("/trim/<session_id>/<crop_filename>", methods=["POST"])
     def trim_crop(session_id, crop_filename):
+        """Trim an existing crop to a new bounding box."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return jsonify({"error": "Session not found"}), 404
@@ -301,6 +313,7 @@ def create_app():
 
     @app.route("/delete-crop/<session_id>", methods=["POST"])
     def delete_crop(session_id):
+        """Delete a crop file and remove it from session metadata."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return jsonify({"error": "Session not found"}), 404
@@ -333,6 +346,7 @@ def create_app():
 
     @app.route("/crops/<session_id>/<crop_filename>", methods=["GET"])
     def serve_crop(session_id, crop_filename):
+        """Serve a crop image file."""
         cm = CropManager(app.config["CROP_DIR"])
         session_crop_dir = os.path.join(cm.crop_root, session_id)
         crop_path = os.path.join(session_crop_dir, crop_filename)
@@ -342,6 +356,7 @@ def create_app():
 
     @app.route("/sessions", methods=["GET"])
     def list_sessions():
+        """Render the sessions list page."""
         _sm = app.session_manager
         sessions = []
         for sid in _sm.list_sessions():
@@ -365,6 +380,7 @@ def create_app():
 
     @app.route("/save-draft/<session_id>", methods=["POST"])
     def save_draft(session_id):
+        """Save draft crop boxes for a page without committing them."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return jsonify({"error": "Session not found"}), 404
@@ -385,6 +401,7 @@ def create_app():
 
     @app.route("/clear-draft/<session_id>", methods=["POST"])
     def clear_draft(session_id):
+        """Remove draft crop boxes from a page."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return jsonify({"error": "Session not found"}), 404
@@ -406,6 +423,7 @@ def create_app():
 
     @app.route("/sessions/<session_id>", methods=["DELETE"])
     def delete_session(session_id):
+        """Delete a session and all associated files."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return jsonify({"error": "Session not found"}), 404
@@ -420,6 +438,7 @@ def create_app():
 
     @app.route("/extract-html/<session_id>", methods=["GET"])
     def extract_html_page(session_id):
+        """Render the HTML extraction progress page for a session."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return render_template("error.html", message="Session not found"), 400
@@ -433,11 +452,13 @@ def create_app():
 
     @app.route("/extract-progress/<session_id>", methods=["GET"])
     def extract_progress_sse(session_id):
+        """Stream HTML extraction progress as server-sent events."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return "Session not found", 404
 
         def generate():
+            """Yield SSE events for the extraction pipeline."""
             yield f"data: {json.dumps({'status': 'starting'})}\n\n"
 
             cancel_event = threading.Event()
@@ -498,6 +519,7 @@ def create_app():
 
     @app.route("/save-page/<session_id>/<int:page_idx>", methods=["POST"])
     def save_page(session_id, page_idx):
+        """Persist edited HTML for a single page via the dedicated save endpoint."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return jsonify({"status": "error", "message": "Session not found"}), 404
@@ -508,13 +530,14 @@ def create_app():
             return jsonify({"status": "error", "message": "Invalid page index"}), 400
 
         edited_html = request.get_data(as_text=True)
-        if edited_html is None:
+        if not edited_html:
             return jsonify({"status": "error", "message": "Empty body"}), 400
 
         return _save_page_html(session_id, page_idx, edited_html)
 
     @app.route("/extracted/<session_id>/extraction.html", methods=["GET"])
     def serve_extracted_html(session_id):
+        """Serve the index page for an extracted session."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return "Session not found", 404
@@ -534,13 +557,14 @@ def create_app():
 
     @app.route("/extracted/<session_id>/page-<int:page_idx>.html", methods=["GET", "POST"])
     def serve_extracted_page(session_id, page_idx):
+        """Serve or update a single extracted page HTML file."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return "Session not found", 404
 
         if request.method == "POST":
             edited_html = request.get_data(as_text=True)
-            if edited_html is None:
+            if not edited_html:
                 return jsonify({"status": "error", "message": "Empty body"}), 400
 
             meta = _sm.load_meta(session_id)
@@ -558,11 +582,12 @@ def create_app():
         out_path = os.path.realpath(
             os.path.join(session_dir, f"page-{page_idx}.html")
         )
-        if not out_path.startswith(session_dir):
-            return "Invalid page index", 400
-        if not os.path.exists(out_path):
-            return "Page not found.", 404
-        return send_file(out_path, mimetype="text/html")
+        if not out_path.startswith(session_dir + os.sep):
+            return "Page not found", 404
+        if os.path.exists(out_path):
+            return send_file(out_path, mimetype="text/html")
+
+        return "Page not found", 404
 
     return app
 

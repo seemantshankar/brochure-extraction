@@ -1,3 +1,4 @@
+"""Assemble extracted HTML fragments into full documents and per-page files."""
 import os
 import re
 import html
@@ -6,6 +7,7 @@ TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
 
 
 def _load_template(name: str) -> str:
+    """Load a template file from the templates directory."""
     path = os.path.join(TEMPLATES_DIR, name)
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
@@ -70,6 +72,7 @@ def resolve_footnotes(page_html: str) -> str:
 
 
 def build_page_html(page_index: int, total_pages: int, content_html: str) -> str:
+    """Wrap page content in a labeled page div."""
     label = f"Page {page_index + 1} of {total_pages}"
     return (
         '<div class="page" id="page-{idx}">\n'
@@ -80,6 +83,7 @@ def build_page_html(page_index: int, total_pages: int, content_html: str) -> str
 
 
 def build_toc(total_pages: int) -> str:
+    """Build a table-of-contents sidebar linking to each page."""
     lines = []
     for i in range(total_pages):
         lines.append(f'    <a href="#page-{i}">Page {i + 1}</a>')
@@ -134,12 +138,16 @@ _EDIT_CSS = """
 
 
 def write_page_files(session_id, pages_data, title, output_root=None):
+    """Write per-page HTML files and an index for a session."""
     if output_root is None:
         output_root = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             "..", "crop_app", "static", "extracted",
         )
-    session_dir = os.path.join(output_root, session_id)
+    output_root = os.path.realpath(output_root)
+    session_dir = os.path.realpath(os.path.join(output_root, session_id))
+    if not session_dir.startswith(output_root + os.sep):
+        raise ValueError(f"Invalid session_id: {session_id}")
     os.makedirs(session_dir, exist_ok=True)
 
     total = len(pages_data)
@@ -153,11 +161,13 @@ def write_page_files(session_id, pages_data, title, output_root=None):
 
         prev_href = f"page-{i-1}.html" if i > 0 else "#"
         next_href = f"page-{i+1}.html" if i < total - 1 else "#"
+        prev_style = 'style="visibility:hidden"' if i == 0 else ""
+        next_style = 'style="visibility:hidden"' if i == total - 1 else ""
         page_nav = (
             f'<nav class="page-nav">'
-            f'<a href="{prev_href}" class="nav-btn" {"style=visibility:hidden" if i == 0 else ""}>← Prev</a>'
+            f'<a href="{prev_href}" class="nav-btn" {prev_style}>← Prev</a>'
             f'<span class="page-indicator">Page {i+1} of {total}</span>'
-            f'<a href="{next_href}" class="nav-btn" {"style=visibility:hidden" if i == total - 1 else ""}>Next →</a>'
+            f'<a href="{next_href}" class="nav-btn" {next_style}>Next →</a>'
             f'</nav>'
         )
 
@@ -220,6 +230,7 @@ def write_page_files(session_id, pages_data, title, output_root=None):
 
 
 def page_nav_css() -> str:
+    """Return CSS rules for per-page prev/next navigation."""
     return """\
 .page-nav { display: flex; justify-content: center; align-items: center; gap: 16px; padding: 16px; }
 .nav-btn { color: #4f8cff; text-decoration: none; font-weight: 600; }

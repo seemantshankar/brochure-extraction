@@ -28,6 +28,12 @@ document.addEventListener("DOMContentLoaded", function () {
     showSaveButton();
   }
 
+  function getSaveUrl() {
+    var match = window.location.pathname.match(/\/extracted\/([^/]+)\/page-(\d+)\.html$/);
+    if (!match) return "";
+    return "/save-page/" + encodeURIComponent(match[1]) + "/" + match[2];
+  }
+
   function showSaveButton() {
     if (saveButton) return;
     saveButton = document.createElement("button");
@@ -35,6 +41,8 @@ document.addEventListener("DOMContentLoaded", function () {
     saveButton.textContent = "Save Changes";
     saveButton.type = "button";
     saveButton.addEventListener("click", function () {
+      var saveUrl = getSaveUrl();
+      if (!saveUrl) return;
       saveButton.disabled = true;
       saveButton.textContent = "Saving...";
       var saveRoot = document.documentElement.cloneNode(true);
@@ -52,7 +60,7 @@ document.addEventListener("DOMContentLoaded", function () {
         ? new XMLSerializer().serializeToString(document.doctype)
         : "<!DOCTYPE html>";
       var fullHtml = doctype + "\n" + saveRoot.outerHTML;
-      fetch("", {
+      fetch(saveUrl, {
         method: "POST",
         headers: { "Content-Type": "text/html" },
         body: fullHtml,

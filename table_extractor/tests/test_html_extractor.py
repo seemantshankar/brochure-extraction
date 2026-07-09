@@ -111,11 +111,21 @@ class TestRunExtractionParallel:
 
         done_event = events[-1]
         assert done_event["status"] == "done"
-        assert 'id="page-0"' in done_event["html"]
-        assert 'id="page-1"' in done_event["html"]
-        page0_pos = done_event["html"].index('id="page-0"')
-        page1_pos = done_event["html"].index('id="page-1"')
-        assert page0_pos < page1_pos
+        assert done_event["page_files"] == ["page-0.html", "page-1.html"]
+        assert done_event["index"] == "index.html"
+
+        out_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "..", "crop_app", "static", "extracted", "test",
+        )
+        with open(os.path.join(out_dir, "page-0.html"), encoding="utf-8") as f:
+            page0_html = f.read()
+        with open(os.path.join(out_dir, "page-1.html"), encoding="utf-8") as f:
+            page1_html = f.read()
+        assert 'id="page-0"' in page0_html
+        assert 'id="page-1"' in page1_html
+        assert 'id="page-1"' not in page0_html
+        assert 'id="page-0"' not in page1_html
 
     def test_preserves_crop_y_sorting_within_page(self, tmp_path):
         crop_root = str(tmp_path / "crops")
@@ -148,8 +158,15 @@ class TestRunExtractionParallel:
                 model="test/model",
             ))
 
-        html = events[-1]["html"]
-        assert html.index("crop_top.png") < html.index("crop_mid.png") < html.index("crop_bottom.png")
+        done_event = events[-1]
+        assert done_event["status"] == "done"
+        out_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "..", "crop_app", "static", "extracted", session_id,
+        )
+        with open(os.path.join(out_dir, "page-0.html"), encoding="utf-8") as f:
+            page_html = f.read()
+        assert page_html.index("crop_top.png") < page_html.index("crop_mid.png") < page_html.index("crop_bottom.png")
 
     def test_yields_progress_events_for_each_task(self, tmp_path):
         self._make_page_image(tmp_path, "page_000.png")
@@ -209,6 +226,32 @@ class TestRunExtractionParallel:
 
         done_event = events[-1]
         assert done_event["status"] == "done"
-        assert "error-region" in done_event["html"]
-        assert "Simulated failure" in done_event["html"]
-        assert "<p>fragment</p>" in done_event["html"]
+        out_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "..", "crop_app", "static", "extracted", session_id,
+        )
+        with open(os.path.join(out_dir, "page-0.html"), encoding="utf-8") as f:
+            page_html = f.read()
+        assert "error-region" in page_html
+        assert "Simulated failure" in page_html
+        assert "<p>fragment</p>" in page_html
+
+    def test_run_extraction_writes_page_files(self, tmp_path):
+        self._make_page_image(tmp_path, "page_000.png")
+
+        sm = self._make_session_manager(tmp_path, [
+            {"path": "page_000.png", "classification": "Simple", "crops": []},
+        ])
+
+        with patch("table_extractor.html_extractor.extract_crop_as_html", self._fake_extract):
+            events = list(run_extraction(
+                session_id="test",
+                sm=sm,
+                crop_root=str(tmp_path / "crops"),
+                model="test/model",
+            ))
+
+        done = events[-1]
+        assert done["status"] == "done"
+        assert done["page_files"] == ["page-0.html"]
+        assert done["index"] == "index.html"

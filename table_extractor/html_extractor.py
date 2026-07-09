@@ -156,9 +156,9 @@ def run_extraction(
     Yields:
         {"status": "progress", "page": int, "totalPages": int, "log": str} — during extraction
         {"status": "cancelled"} — emitted when cancel_event is set mid-flight
-        {"status": "done", "html": str} — final assembled HTML document
+        {"status": "done", "page_files": list, "index": str} — per-page file manifest
     """
-    from table_extractor.html_assembler import assemble_full_document
+    from table_extractor.html_assembler import write_page_files
 
     meta = sm.load_meta(session_id)
     if not meta:
@@ -317,6 +317,14 @@ def run_extraction(
                     parts.append(fragment)
             pages_data.append({"html": "\n".join(parts)})
 
-    result_html = assemble_full_document(pages_data, title)
+    out_dir = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "crop_app", "static", "extracted",
+    )
+    write_page_files(session_id, pages_data, title, output_root=out_dir)
 
-    yield {"status": "done", "html": result_html}
+    yield {
+        "status": "done",
+        "page_files": [f"page-{i}.html" for i in range(len(pages_data))],
+        "index": "index.html",
+    }

@@ -75,7 +75,7 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   EDITABLE_SELECTORS.forEach(function (sel) {
-    document.querySelectorAll("." + sel).forEach(function (el) {
+    document.querySelectorAll(sel).forEach(function (el) {
       if (el.querySelector("input, textarea, select")) return;
       var textNodes = getTextNodes(el);
       if (textNodes.length === 0) return;
@@ -86,7 +86,7 @@ document.addEventListener("DOMContentLoaded", function () {
         input.value = textNodes[0].nodeValue;
         input.className = "inline-edit-input";
         textNodes[0].parentNode.replaceChild(input, textNodes[0]);
-        input.addEventListener("input", function () { markEdited(input); });
+        input.addEventListener("input", function () { input.setAttribute("value", input.value); markEdited(input); });
         input.addEventListener("focus", function () { input.select(); });
       } else {
         el.setAttribute("contenteditable", "true");
@@ -109,7 +109,7 @@ document.addEventListener("DOMContentLoaded", function () {
         }
         if (target && target.matches) {
           EDITABLE_SELECTORS.forEach(function (sel) {
-            if (target.matches("." + sel)) {
+            if (target.matches(sel)) {
               markEdited(target);
             }
           });
@@ -118,7 +118,7 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   });
 
-  document.querySelectorAll(EDITABLE_SELECTORS.map(function (s) { return "." + s; }).join(", ")).forEach(function (el) {
+  document.querySelectorAll(EDITABLE_SELECTORS.join(", ")).forEach(function (el) {
     observer.observe(el, { childList: true, characterData: true, subtree: true });
   });
 });

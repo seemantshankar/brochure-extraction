@@ -4,7 +4,7 @@
 
 The extraction pipeline currently produces a single merged `extraction.html` per session. This spec changes that to a **per-page file structure** where each page's HTML is individually editable, auditable, and savable.
 
-**Approach:** The LLM wraps extractable values in semantic `<span class="field" data-field="...">` tags at extraction time (Approach A). A browser UI makes these fields editable and provides a Save button.
+**Approach:** The LLM output is unchanged. A frontend script identifies text-bearing DOM elements (table cells, list items, headings, paragraphs) and makes them editable inline (Approach C). The user edits values directly in the rendered layout; a Save button persists changes.
 
 ---
 
@@ -28,39 +28,9 @@ The old `extraction.html` path returns `index.html` as a backward-compat fallbac
 
 ---
 
-## 2. LLM Prompt Change
+## 2. No LLM Prompt Change
 
-`table_extractor/prompts/html/_master.txt` gets one additional constraint appended after the existing Operational Constraints:
-
-```
-  8. Field Wrapping: Wrap every price, phone number, URL, email, date, address,
-     vehicle model name, feature-matrix symbol, mileage figure, and specification value in
-     <span class="field" data-field="PRICE|PHONE|URL|EMAIL|DATE|ADDRESS|MODEL|SYMBOL|MILEAGE|SPEC">…</span>.
-     Feature-matrix symbols cover indicators for feature availability in a trim, such as
-     checkmarks, dots, crosses, or similar glyphs used in comparison tables. MILEAGE covers
-     fuel efficiency values with units (e.g. km/l, km/kg). SPEC covers all other numeric or
-     unit-bearing values such as dimensions, weights, engine capacity/output/torque,
-     capacities, warranty figures, and material types. Do not alter text, layout, or structure
-     around the value. If a value is ambiguous between two field types, use data-field="TEXT".
-```
-
-### Field types
-
-| `data-field` | Examples |
-|---|---|
-| `PRICE` | `₹ 5.99 Lakh`, `$29,999`, `Rs. 12,34,000` |
-| `PHONE` | `+91 98765 43210`, `1800-123-456` |
-| `URL` | `www.marutisuzuki.com`, `https://...` |
-| `EMAIL` | `info@example.com` |
-| `DATE` | `01 Jan 2026`, `2025-08-15` |
-| `ADDRESS` | dealer addresses, showroom locations |
-| `MODEL` | `WagonR`, `Vxi`, `ZXi Plus`, `Diesel` variants |
-| `SYMBOL` | checkmarks, dots, crosses, or other glyphs in feature-matrix cells |
-| `MILEAGE` | `24.43 km/l`, `33.47 km/kg`, fuel efficiency figures with units |
-| `SPEC` | dimensions (3655 mm), weights (825 kg), engine capacity (998 cc), output (50.4 kW), torque (91.1 Nm), capacities (32 L), warranty (3 years), material types (Steel Wheels), colour names |
-| `TEXT` | ambiguous values (fallback) |
-
-This is purely additive — the existing extraction behavior (table reconstitution, footnote mapping, 100% coverage) is unchanged.
+The existing `_master.txt` prompt is **unchanged**. The LLM continues to output raw HTML fragments as before — no field wrapping, no semantic markup injection. This keeps extraction quality stable and avoids per-brochure prompt tuning.
 
 ---
 
@@ -88,8 +58,8 @@ The existing `assemble_full_document` function and its templates (`output_page.h
 | Template | Role |
 |---|---|
 | `templates/output_page.html` | Per-page wrapper (same shell, different TOC/nav structure) |
-| `templates/output_page.css` | Styles for per-page view, editable fields, save button |
-| `templates/output_page.js` | Edit observability, save logic, page navigation |
+| `templates/output_page.css` | Styles for per-page view, editable regions, save button |
+| `templates/output_page.js` | Edit injection, edit observability, save logic, page navigation |
 
 The per-page template injects:
 
@@ -133,29 +103,39 @@ POST /save-page/<session_id>/<page_idx>
 
 ---
 
-## 5. Frontend: Editable Fields + Save Button
+## 5. Frontend: Editable DOM + Save Button
 
-### Editability
+### Edit injection
 
-- On page load, all `span.field` elements get `contenteditable="true"` automatically.
-- Clicking a field highlights it with a subtle outline (`2px solid #4f8cff`).
-- The user edits the text content directly in the rendered layout. Styling and structure are untouched because the editable layer is inside the existing span.
+On page load, JavaScript scans the page content for text-bearing elements and replaces their text nodes with editable inputs. The selector targets:
+
+| Element | Why editable |
+|---|---|
+| `td`, `th` | Table cells — symbols, specs, model names, prices |
+| `li` | List items — feature names, descriptions |
+| `h1`–`h6` | Headings — page titles, section headings |
+| `p`, `dd`, `dt` | Paragraphs and definition terms — body text, stat card values |
+| `span.field` (if any appear from future prompt changes) | Explicitly-wrapped values — preserved as-is |
+
+For each matched element:
+- If it contains only a single text node, that text node is replaced with an `<input type="text">` styled to match the original text appearance (font size, color, weight, background transparent, border none until focus).
+- If it contains mixed content (text + child elements like `<sup>`, `<a>`, `<br>`), the element gets `contenteditable="true"` instead — preserving the child structure while allowing inline editing.
+- The original text content is stored in a `data-original` attribute for change detection.
+
+### Edit feedback
+
+- Edited elements get `class="edited"` → CSS: `outline: 2px solid #4f8cff; outline-offset: 1px;`.
+- The input/editable region is visually seamless: default state is indistinguishable from static text. On focus, a subtle border appears. On edit, the blue outline marks it as dirty.
 
 ### Save button
 
 A sticky button in the **bottom-right** corner (z-index above page content):
 
 - **Hidden by default.**
-- A `MutationObserver` watches all `.field` elements for text content changes.
-- On first change from original value → button appears with text **"Save Changes"**.
+- A `MutationObserver` watches all editable regions for `input` / `DOMSubtreeModified` events. Any change from `data-original` → button appears with text **"Save Changes"**.
 - Clicking it sends `POST /save-page/<sid>/<page_idx>` with `document.body.innerHTML`.
-- On success → button hides, brief success toast ("Saved") fades out after 2s, field highlights are cleared.
+- On success → button hides, brief success toast ("Saved") fades out after 2s, `edited` classes are removed, `data-original` values are updated to the saved content.
 - On failure → button stays, error text appears below the button label.
-
-### Edit feedback
-
-- Edited `.field` elements get `class="field edited"` → CSS: `outline: 2px solid #4f8cff; outline-offset: 1px;`.
-- On successful save, the `edited` class is removed and original text content is updated to the saved value (so further edits are detected accurately).
 
 ### Page navigation
 
@@ -171,22 +151,31 @@ A sticky button in the **bottom-right** corner (z-index above page content):
 
 ---
 
-## 6. Success Criteria
+## 6. Preserved Behavior
+
+- Existing extraction behavior (table reconstitution, footnote mapping, 100% coverage) is unchanged.
+- All existing CSS styling is preserved. Editable regions inherit existing font/color/spacing — no layout shift.
+- The existing `assemble_full_document` function and its templates are preserved for any future use.
+- Existing `output_page.js` footnote interactivity, table Copy buttons, and TOC active-state tracking are all preserved.
+
+---
+
+## 7. Success Criteria
 
 | Criterion | Verification |
 |---|---|
 | Each page produces its own `page-N.html` file | Output directory contains `page-0.html` … `page-N.html` |
 | Crops merge only within their parent page's file | Each file contains only that page's crop fragments |
-| Editable values wrapped in `<span class="field" data-field="...">` | LLM output contains `span.field` with correct `data-field` attribute |
-| Editing any field shows a sticky "Save Changes" button | `MutationObserver` triggers → button appears |
+| Table cells, list items, headings, paragraphs are editable in the browser | Frontend script injects inputs/contenteditable into these elements |
+| Editing any region shows a sticky "Save Changes" button | MutationObserver triggers → button appears |
 | Clicking save overwrites the original file | `POST /save-page` → file on disk is updated |
 | `index.html` allows navigation between pages | Front-matter loads, links to `page-N.html` resolve correctly |
 
 ---
 
-## 7. Non-Goals (Out of Scope)
+## 8. Non-Goals (Out of Scope)
 
+- No semantic field classification (price vs feature vs spec — the audit UI treats all values uniformly).
 - No structural HTML validation on save (raw HTML overwrite).
 - No version history or diff view.
 - No cross-page footnote resolution.
-- No approach B or C exploration in this implementation (can be revisited if Approach A is unreliable).

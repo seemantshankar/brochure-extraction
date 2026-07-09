@@ -118,3 +118,111 @@ def assemble_full_document(pages_data: list, title: str = "Brochure Extraction")
     html = html.replace("{{ pages }}", pages_html)
 
     return html
+
+
+_EDIT_CSS = """
+.inline-edit-input { border: 1px solid #4f8cff; border-radius: 4px; padding: 2px 4px; font: inherit; width: 100%; box-sizing: border-box; }
+.inline-edit-input:focus { outline: 2px solid #4f8cff; outline-offset: 1px; }
+.edited { background: #fff7e6; }
+.save-btn { margin: 8px; padding: 8px 16px; background: #4f8cff; color: #fff; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; }
+.save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.save-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #16a34a; color: #fff; padding: 10px 18px; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); animation: fadeInOut 2.5s ease forwards; }
+.save-error { background: #dc2626; }
+@keyframes fadeInOut { 0% { opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } 100% { opacity: 0; } }
+"""
+
+
+def write_page_files(session_id, pages_data, title, output_root=None):
+    if output_root is None:
+        output_root = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "crop_app", "static", "extracted",
+        )
+    session_dir = os.path.join(output_root, session_id)
+    os.makedirs(session_dir, exist_ok=True)
+
+    total = len(pages_data)
+    css = _load_template("output_page.css")
+    js = _load_template("output_page_edit.js")
+    js_name = "output_page_edit.js"
+    with open(os.path.join(session_dir, js_name), "w", encoding="utf-8") as f:
+        f.write(js)
+
+    for i, pdata in enumerate(pages_data):
+        content = pdata.get("html", "")
+        content = resolve_footnotes(content)
+        page_body = build_page_html(i, total, content)
+
+        prev_href = f"page-{i-1}.html" if i > 0 else "#"
+        next_href = f"page-{i+1}.html" if i < total - 1 else "#"
+        page_nav = (
+            f'<nav class="page-nav">'
+            f'<a href="{prev_href}" class="nav-btn" {"style=visibility:hidden" if i == 0 else ""}>← Prev</a>'
+            f'<span class="page-indicator">Page {i+1} of {total}</span>'
+            f'<a href="{next_href}" class="nav-btn" {"style=visibility:hidden" if i == total - 1 else ""}>Next →</a>'
+            f'</nav>'
+        )
+
+        page_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{html.escape(title)} — Page {i+1}</title>
+  <style>
+{css}
+{page_nav_css()}
+{_EDIT_CSS}
+  </style>
+</head>
+<body>
+{page_nav}
+<main class="document-canvas">
+{page_body}
+</main>
+<script src="{js_name}"></script>
+</body>
+</html>"""
+        out_path = os.path.join(session_dir, f"page-{i}.html")
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(page_html)
+
+    index_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{html.escape(title)} — Pages</title>
+  <style>
+{css}
+.page-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; padding: 16px; }}
+.page-card {{ display: flex; align-items: center; justify-content: center; padding: 24px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; color: #4f8cff; text-decoration: none; font-weight: 600; }}
+.page-card:hover {{ border-color: #4f8cff; }}
+  </style>
+</head>
+<body>
+<main class="document-canvas">
+  <h1>{html.escape(title)}</h1>
+  <p class="page-indicator">{total} page(s)</p>
+  <div class="page-grid">
+"""
+    for i in range(total):
+        index_html += f'    <a href="page-{i}.html" class="page-card">Page {i+1}</a>\n'
+    index_html += """  </div>
+</main>
+<script>
+  // No special JS needed for index page
+</script>
+</body>
+</html>"""
+    with open(os.path.join(session_dir, "index.html"), "w", encoding="utf-8") as f:
+        f.write(index_html)
+
+
+def page_nav_css() -> str:
+    return """\
+.page-nav { display: flex; justify-content: center; align-items: center; gap: 16px; padding: 16px; }
+.nav-btn { color: #4f8cff; text-decoration: none; font-weight: 600; }
+.nav-btn[style*="visibility:hidden"] { visibility: hidden; pointer-events: none; }
+.page-indicator { font-size: 0.85rem; color: #64748b; }
+"""

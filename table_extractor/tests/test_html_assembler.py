@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -9,7 +10,28 @@ from table_extractor.html_assembler import (
     build_page_html,
     build_toc,
     assemble_full_document,
+    write_page_files,
 )
+
+
+def test_write_page_files_creates_per_page_html():
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = os.path.join(tmp, "extracted", "test-sid")
+        pages_data = [
+            {"html": "<p>Page 0 content</p>"},
+            {"html": "<p>Page 1 content</p>"},
+        ]
+        write_page_files("test-sid", pages_data, "Test Doc", output_root=os.path.join(tmp, "extracted"))
+
+        assert os.path.exists(os.path.join(session_dir, "page-0.html"))
+        assert os.path.exists(os.path.join(session_dir, "page-1.html"))
+        assert os.path.exists(os.path.join(session_dir, "index.html"))
+
+        with open(os.path.join(session_dir, "page-0.html"), "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "Page 0 content" in content
+        assert "Test Doc" in content
+        assert "editable" not in content.lower()  # no prompt change artifacts
 
 
 class TestResolveFootnotes:

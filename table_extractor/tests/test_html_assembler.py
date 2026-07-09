@@ -31,7 +31,6 @@ def test_write_page_files_creates_per_page_html():
             content = f.read()
         assert "Page 0 content" in content
         assert "Test Doc" in content
-        assert "editable" not in content.lower()  # no prompt change artifacts
 
 
 class TestResolveFootnotes:

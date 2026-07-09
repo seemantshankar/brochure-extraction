@@ -123,6 +123,7 @@ def assemble_full_document(pages_data: list, title: str = "Brochure Extraction")
 _EDIT_CSS = """
 .inline-edit-input { border: 1px solid #4f8cff; border-radius: 4px; padding: 2px 4px; font: inherit; width: 100%; box-sizing: border-box; }
 .inline-edit-input:focus { outline: 2px solid #4f8cff; outline-offset: 1px; }
+[contenteditable="true"]:focus { outline: 2px solid #4f8cff; outline-offset: 1px; }
 .edited { background: #fff7e6; }
 .save-btn { margin: 8px; padding: 8px 16px; background: #4f8cff; color: #fff; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; }
 .save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -144,9 +145,6 @@ def write_page_files(session_id, pages_data, title, output_root=None):
     total = len(pages_data)
     css = _load_template("output_page.css")
     js = _load_template("output_page_edit.js")
-    js_name = "output_page_edit.js"
-    with open(os.path.join(session_dir, js_name), "w", encoding="utf-8") as f:
-        f.write(js)
 
     for i, pdata in enumerate(pages_data):
         content = pdata.get("html", "")
@@ -180,7 +178,9 @@ def write_page_files(session_id, pages_data, title, output_root=None):
 <main class="document-canvas">
 {page_body}
 </main>
-<script src="{js_name}"></script>
+<script>
+{js}
+</script>
 </body>
 </html>"""
         out_path = os.path.join(session_dir, f"page-{i}.html")

@@ -37,10 +37,12 @@ document.addEventListener("DOMContentLoaded", function () {
     saveButton.addEventListener("click", function () {
       saveButton.disabled = true;
       saveButton.textContent = "Saving...";
+      var saveRoot = document.body.cloneNode(true);
+      saveRoot.querySelectorAll(".save-btn, .save-toast, .save-error").forEach(function (n) { n.remove(); });
       fetch("", {
         method: "POST",
         headers: { "Content-Type": "text/html" },
-        body: document.body.innerHTML,
+        body: saveRoot.innerHTML,
       })
       .then(function (r) { return r.json(); })
       .then(function (data) {

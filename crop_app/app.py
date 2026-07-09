@@ -521,6 +521,8 @@ def create_app():
 
         base_dir = app.config["EXTRACTED_DIR"]
         session_dir = os.path.realpath(os.path.join(base_dir, session_id))
+        if not session_dir.startswith(base_dir + os.sep):
+            return "Session not found", 404
         if not os.path.isdir(session_dir):
             return "Extraction not found. Please run extraction first.", 404
 

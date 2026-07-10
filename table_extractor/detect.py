@@ -36,7 +36,7 @@ def _fetch_generation_cost(generation_id: str) -> float:
 # OpenRouter client configuration
 client = OpenAI(
     base_url=os.environ.get("OPENAI_BASE_URL", "https://openrouter.ai/api/v1"),
-    api_key=os.environ.get("OPENROUTER_API_KEY", "mock_key"),
+    api_key=os.environ["OPENROUTER_API_KEY"],
 )
 
 DETECTION_TOOL_SCHEMA = {

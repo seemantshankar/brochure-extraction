@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 client = OpenAI(
     base_url=os.environ.get("OPENAI_BASE_URL", "https://openrouter.ai/api/v1"),
-    api_key=os.environ.get("OPENROUTER_API_KEY", "mock_key"),
+    api_key=os.environ["OPENROUTER_API_KEY"],
 )
 
 total_extraction_usage = {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0}

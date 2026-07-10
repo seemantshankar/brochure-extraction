@@ -7,6 +7,24 @@ from PIL import Image
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1"
 
+def _load_env():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(base_dir)
+    env_path = os.path.join(project_root, ".env")
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip().strip('"').strip("'")
+                    os.environ.setdefault(k, v)
+
+_load_env()
+
 _client = None
 
 def _get_client():
@@ -14,12 +32,12 @@ def _get_client():
     if _client is None:
         _client = OpenAI(
             base_url=OPENROUTER_URL,
-            api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+            api_key=os.environ["OPENROUTER_API_KEY"],
             timeout=120.0,
         )
     return _client
 
-MODEL_ID = os.environ.get("PAGE_ANALYSIS_MODEL_ID", "openai/gpt-4o-mini")
+MODEL_ID = os.environ["PAGE_ANALYSIS_MODEL_ID"]
 
 ANALYSIS_PROMPT = """You are analyzing a single page of a product brochure / spec sheet.
 Your job is to determine whether the page is "Simple" or "Complex" for processing by a small and cheap vision LLM.

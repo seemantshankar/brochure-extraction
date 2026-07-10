@@ -29,7 +29,7 @@ def _get_client():
     if _client is None:
         _client = OpenAI(
             base_url=OPENROUTER_URL,
-            api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+            api_key=os.environ["OPENROUTER_API_KEY"],
             timeout=120.0,
         )
     return _client

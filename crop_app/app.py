@@ -9,15 +9,29 @@ import threading
 from flask import Flask, request, jsonify, redirect, url_for, send_file, render_template, Response
 
 logger = logging.getLogger(__name__)
+
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+env_path = os.path.join(_project_root, ".env")
+if os.path.exists(env_path):
+    with open(env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                os.environ.setdefault(k, v)
+
 from werkzeug.utils import secure_filename
 from session_manager import SessionManager
 from crop_manager import CropManager
 from pdf_converter import pdf_to_pages, upgrade_page_to_hires
 from llm import analyze_page
-
-_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
 from table_extractor.html_extractor import run_extraction
 
 UPLOAD_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
@@ -48,19 +62,6 @@ def create_app():
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(base_dir)
-    env_path = os.path.join(project_root, ".env")
-
-    if os.path.exists(env_path):
-        with open(env_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" in line:
-                    k, v = line.split("=", 1)
-                    k = k.strip()
-                    v_raw = v.strip().strip('"').strip("'")
-                    os.environ.setdefault(k, v_raw)
 
     app.config["UPLOAD_DIR"] = os.path.join(project_root, "uploads")
     app.config["CROP_DIR"] = os.path.join(project_root, "crops")
@@ -468,7 +469,7 @@ def create_app():
                     session_id=session_id,
                     sm=_sm,
                     crop_root=app.config["CROP_DIR"],
-                    model=os.environ.get("DATA_EXTRACTION_MODEL_ID", "qwen/qwen3.7-plus"),
+                    model=os.environ["DATA_EXTRACTION_MODEL_ID"],
                     cancel_event=cancel_event,
                 ):
                     if event["status"] == "done":

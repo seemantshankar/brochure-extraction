@@ -197,6 +197,7 @@ def create_app():
 
     @app.route("/analyze/<session_id>", methods=["POST"])
     def analyze_session(session_id):
+        """Analyze all unclassified pages in a session."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return jsonify({"error": "Session not found"}), 404
@@ -272,6 +273,7 @@ def create_app():
 
     @app.route("/commit/<session_id>", methods=["POST"])
     def commit_crops(session_id):
+        """Save new crop regions for a page and persist them."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return jsonify({"error": "Session not found"}), 404
@@ -322,6 +324,7 @@ def create_app():
 
     @app.route("/trim/<session_id>/<crop_filename>", methods=["POST"])
     def trim_crop(session_id, crop_filename):
+        """Trim an existing crop to a new bounding box."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return jsonify({"error": "Session not found"}), 404
@@ -368,6 +371,7 @@ def create_app():
 
     @app.route("/delete-crop/<session_id>", methods=["POST"])
     def delete_crop(session_id):
+        """Delete a crop file and remove it from session metadata."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return jsonify({"error": "Session not found"}), 404
@@ -539,6 +543,7 @@ def create_app():
 
     @app.route("/extract-html/<session_id>", methods=["GET"])
     def extract_html_page(session_id):
+        """Render the HTML extraction progress page for a session."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return render_template("error.html", message="Session not found"), 400
@@ -604,6 +609,7 @@ def create_app():
 
     @app.route("/extract-progress/<session_id>", methods=["GET"])
     def extract_progress_sse(session_id):
+        """Stream HTML extraction progress as server-sent events."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return "Session not found", 404
@@ -650,6 +656,7 @@ def create_app():
                             "progress": completed, "total": total,
                         })
                     else:
+                        yield _sse_event({"status": "done", "progress": completed, "total": total})
                         yield _sse_event({"status": "done", "progress": completed, "total": total})
                     return
                 yield _sse_event({
@@ -734,11 +741,6 @@ def create_app():
     @app.route("/extracted/<session_id>/page-<int:page_idx>.html", methods=["GET", "POST"])
     def serve_extracted_page(session_id, page_idx):
         """Serve or update a single extracted page HTML file."""
-        base_dir = os.path.realpath(app.config["EXTRACTED_DIR"])
-        session_dir = os.path.realpath(os.path.join(base_dir, session_id))
-        if not session_dir.startswith(base_dir + os.sep):
-            return "Session not found", 404
-
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return "Session not found", 404
@@ -754,6 +756,11 @@ def create_app():
                 return jsonify({"status": "error", "message": "Invalid page index"}), 400
 
             return _save_page_html(session_id, page_idx, edited_html)
+
+        base_dir = os.path.realpath(app.config["EXTRACTED_DIR"])
+        session_dir = os.path.realpath(os.path.join(base_dir, session_id))
+        if not session_dir.startswith(base_dir + os.sep):
+            return "Session not found", 404
 
         if not os.path.isdir(session_dir):
             return "Extraction not found. Please run extraction first.", 404

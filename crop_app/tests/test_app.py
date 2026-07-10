@@ -196,29 +196,31 @@ def test_path_traversal_and_prefix_bypass(isolated_client, tmp_path):
     extracted_dir = tmp_path / "extracted"
     app.config["EXTRACTED_DIR"] = str(extracted_dir)
 
-    # Mock session_exists to bypass the session check and test path checks in _save_page_html/serve_extracted_page
+    # Mock session_exists to bypass the session check and test path checks
     app.session_manager.session_exists = lambda sid: True
     app.session_manager.load_meta = lambda sid: {"pages": [{"path": "page_000.png", "classification": "Simple", "crops": []}]}
 
-    with app.test_request_context(data="<p>hacked</p>"):
-        # Test serve_extracted_page with traversal session_id
-        resp = app.view_functions["serve_extracted_page"]("..", 0)
-        # For GET request (which is default without POST method), it should return "Session not found", 404 (Flask returns tuple/response)
-        assert resp == ("Session not found", 404)
+    # GET with traversal session_id: path-traversal containment check triggers → 404
+    resp_get = client.get("/extracted/../page-0.html")
+    assert resp_get.status_code == 404
 
-        # Test POST serve_extracted_page with traversal session_id
-        from flask import request
-        request.method = "POST"
-        resp_post = app.view_functions["serve_extracted_page"]("..", 0)
-        assert resp_post == ("Session not found", 404)
+    # POST with traversal session_id: _save_page_html rejects via path guard → 400 or 404
+    resp_post = client.post(
+        "/extracted/../page-0.html",
+        data="<p>hacked</p>",
+        content_type="text/html",
+    )
+    assert resp_post.status_code in (400, 404)
 
-        # Test save_page view function (which calls _save_page_html) with traversal session_id
+    # save_page endpoint with traversal session_id: _save_page_html path guard → 400
+    with app.test_request_context(
+        "/save-page/../0",
+        method="POST",
+        data="<p>hacked</p>",
+        content_type="text/html",
+    ):
         resp_save = app.view_functions["save_page"]("..", 0)
-        # This returns a tuple of (Response, 400)
         assert resp_save[1] == 400
         assert resp_save[0].get_json()["status"] == "error"
         assert "Invalid session id" in resp_save[0].get_json()["message"]
-
-
-
 

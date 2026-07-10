@@ -148,7 +148,8 @@ def test_simple_pdf_page_does_not_trigger_upgrade(app_with_pdf_session):
     assert data["pages"][0]["classification"] == "Simple"
 
 
-def test_complex_pdf_page_triggers_upgrade(app_with_pdf_session):
+def test_complex_pdf_page_triggers_upgrade(app_with_pdf_session, monkeypatch):
+    monkeypatch.setenv("HIRES_PAGES", "true")
     client, sid = app_with_pdf_session
 
     mock_result = {"classification": "Complex", "error": None}
@@ -166,7 +167,8 @@ def test_complex_pdf_page_triggers_upgrade(app_with_pdf_session):
     assert data["pages"][0]["analysis_status"] == "done"
 
 
-def test_upgrade_failure_records_error(app_with_pdf_session):
+def test_upgrade_failure_records_error(app_with_pdf_session, monkeypatch):
+    monkeypatch.setenv("HIRES_PAGES", "true")
     client, sid = app_with_pdf_session
 
     mock_result = {"classification": "Complex", "error": None}
@@ -177,6 +179,20 @@ def test_upgrade_failure_records_error(app_with_pdf_session):
     data = resp.get_json()
     assert data["pages"][0]["classification"] == "Complex"
     assert data["pages"][0]["upgrade_error"] == "poppler crashed"
+
+
+def test_complex_pdf_page_default_no_upgrade(app_with_pdf_session):
+    client, sid = app_with_pdf_session
+
+    mock_result = {"classification": "Complex", "error": None}
+    with patch("app.analyze_page", return_value=mock_result), \
+         patch("app.upgrade_page_to_hires") as mock_upgrade:
+        resp = client.post(f"/analyze/{sid}")
+
+    mock_upgrade.assert_not_called()
+    data = resp.get_json()
+    assert data["pages"][0]["classification"] == "Complex"
+    assert data["pages"][0]["analysis_status"] == "done"
 
 
 def test_missing_page_file_defaults_complex(app_with_session):

@@ -219,7 +219,13 @@ def create_app():
                 result = {"classification": None, "error": "Page file missing"}
             else:
                 result = analyze_page(page_path)
-                if result.get("classification") == "Complex" and \
+                # HIRES_PAGES (default off): when enabled, Complex pages are
+                # re-rendered at 300 DPI for higher-fidelity crops. When off,
+                # crops stay at the 150 DPI used for analysis — which the LLM
+                # already handles, and which keeps small vision models from
+                # returning blank output on oversized 300 DPI crops.
+                if os.environ.get("HIRES_PAGES", "false").lower() == "true" and \
+                   result.get("classification") == "Complex" and \
                    page_snapshot.get("pdf_path") and page_snapshot.get("pdf_page") is not None:
                     try:
                         pdf_full_path = os.path.join(session_dir, page_snapshot["pdf_path"])
@@ -616,6 +622,7 @@ def create_app():
 
         def generate():
             yield _sse_event({"status": "starting"})
+            last_logged_completed = -1
             while True:
                 meta = _sm.load_meta(session_id)
                 if meta is None:
@@ -641,7 +648,7 @@ def create_app():
                             "progress": completed, "total": total,
                         })
                         return
-                    if total == 0:
+                    if total == 0 or completed == 0:
                         yield _sse_event({"status": "idle", "message": "Extraction not started"})
                         return
                     yield _sse_event({
@@ -662,10 +669,13 @@ def create_app():
                         yield _sse_event({"status": "done", "progress": completed, "total": total})
                         yield _sse_event({"status": "done", "progress": completed, "total": total})
                     return
-                yield _sse_event({
+                event = {
                     "status": "progress", "progress": completed, "total": total,
-                    "log": f"Extracted {completed}/{total} regions...",
-                })
+                }
+                if completed != last_logged_completed:
+                    event["log"] = f"Extracted {completed}/{total} regions..."
+                    last_logged_completed = completed
+                yield _sse_event(event)
                 job.done_event.wait(timeout=0.5)
 
         return Response(generate(), mimetype="text/event-stream")
@@ -787,4 +797,7 @@ def create_app():
 
 if __name__ == "__main__":
     app = create_app()
-    app.run(debug=True, port=5000)
+    # use_reloader=False: the extraction job runs in a background thread that
+    # cannot survive a process restart, so auto-restarting on file changes
+    # would kill in-flight extractions and corrupt their state.
+    app.run(debug=True, use_reloader=False, port=5000)

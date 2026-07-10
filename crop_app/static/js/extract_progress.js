@@ -54,30 +54,30 @@ document.addEventListener("DOMContentLoaded", function () {
     errorMsg.textContent = message || "Extraction failed. Please check server logs.";
   }
 
-  function showRetry(message, url) {
+  function showRetry(message, url, label) {
     progressArea.hidden = true;
     var retryArea = document.getElementById("retry-area");
     var retryMsg = document.getElementById("retry-msg");
     var retryBtn = document.getElementById("retry-btn");
     retryMsg.textContent = message;
     retryBtn.disabled = false;
-    retryBtn.textContent = "Retry";
+    retryBtn.textContent = label || "Retry";
     retryBtn.onclick = function () {
       retryBtn.disabled = true;
-      retryBtn.textContent = "Retrying...";
+      retryBtn.textContent = (label || "Retry") + "...";
       fetch(url, { method: "POST" })
         .then(function (response) {
           if (response.ok) {
             window.location.reload();
           } else {
             retryBtn.disabled = false;
-            retryBtn.textContent = "Retry";
-            retryMsg.textContent = "Retry failed (HTTP " + response.status + "). Please try again.";
+            retryBtn.textContent = label || "Retry";
+            retryMsg.textContent = (label || "Retry") + " failed (HTTP " + response.status + "). Please try again.";
           }
         })
         .catch(function () {
           retryBtn.disabled = false;
-          retryBtn.textContent = "Retry";
+          retryBtn.textContent = label || "Retry";
         });
     };
     retryArea.hidden = false;
@@ -122,11 +122,11 @@ document.addEventListener("DOMContentLoaded", function () {
 
     } else if (data.status === "paused") {
       appendLog("Interrupted — click Resume to continue.");
-      showRetry("Extraction interrupted. Resume from where it left off?", "/extract-html/" + sessionId);
+      showRetry("Extraction interrupted. Resume from where it left off?", "/extract-html/" + sessionId, "Resume");
 
     } else if (data.status === "idle") {
       appendLog("No extraction started yet.");
-      showRetry("Start extraction?", "/extract-html/" + sessionId);
+      showRetry("Start extraction?", "/extract-html/" + sessionId, "Start Extraction");
 
     } else if (data.status === "error") {
       setProgress(100);
@@ -140,7 +140,10 @@ document.addEventListener("DOMContentLoaded", function () {
           "/extract-html/" + sessionId + "?retry_nonretryable=true"
         );
       } else {
-        showError(data.message);
+        showRetry(
+          "Extraction failed: " + (data.message || "unknown error") + " Click Retry to try again.",
+          "/extract-html/" + sessionId
+        );
       }
       source.close();
     }

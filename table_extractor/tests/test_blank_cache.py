@@ -6,6 +6,7 @@ import json
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
+import pytest
 from unittest.mock import patch, MagicMock
 from PIL import Image
 from table_extractor.html_extractor import extract_crop_as_html
@@ -67,6 +68,74 @@ def test_stale_blank_cache_deleted_and_overwritten():
         with open(cache_file, "r") as f:
             cached_data = json.load(f)
         assert cached_data[0] == "<p>fresh</p>"
+    finally:
+        if os.path.exists(cache_file):
+            os.unlink(cache_file)
+
+
+def test_null_choices_raises_blank_response_error():
+    # Regression: model returned choices=None (null). Previously crashed with
+    # "'NoneType' object is not subscriptable"; now it must raise a retryable error.
+    with patch("table_extractor.html_extractor.load_full_prompt", return_value="P"), \
+         patch("table_extractor.html_extractor._get_client") as gc, \
+         patch("table_extractor.html_extractor.cached_call", side_effect=lambda **kw: kw["fn"]()):
+        resp = MagicMock()
+        resp.choices = None
+        gc.return_value.chat.completions.create.return_value = resp
+        with pytest.raises(BlankResponseError):
+            extract_crop_as_html(_make_img(), "m")
+
+
+def test_null_choices_retries_then_succeeds():
+    with patch("table_extractor.html_extractor.load_full_prompt", return_value="P"), \
+         patch("table_extractor.html_extractor._get_client") as gc, \
+         patch("table_extractor.html_extractor.cached_call", side_effect=lambda **kw: kw["fn"]()):
+        resp_bad = MagicMock()
+        resp_bad.choices = None
+        resp_good = MagicMock()
+        resp_good.choices = [MagicMock()]
+        resp_good.choices[0].message.content = "<p>ok</p>"
+        resp_good.usage = None
+        gc.return_value.chat.completions.create.side_effect = [resp_bad, resp_good]
+        result = extract_crop_as_html(_make_img(), "m")
+    assert result == "<p>ok</p>"
+
+
+def test_corrupt_none_cache_is_discarded_and_refetched(tmp_path):
+    import io
+    img = _make_img()
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    img_bytes = buf.getvalue()
+    key = _cache_key(img_bytes, "html_extract", "m", "PROMPT")
+    cache_file = os.path.join(CACHE_DIR, f"{key}.json")
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    with open(cache_file, "w") as f:
+        f.write("null")
+
+    try:
+        calls = {"n": 0}
+
+        def fake_cached_call(**kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Simulate a corrupt cache entry deserialized as None.
+                return None
+            return kw["fn"]()
+
+        with patch("table_extractor.html_extractor.load_full_prompt", return_value="PROMPT"), \
+             patch("table_extractor.html_extractor._get_client") as gc, \
+             patch("table_extractor.html_extractor.cached_call", side_effect=fake_cached_call):
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "<p>good</p>"
+            resp.usage = None
+            gc.return_value.chat.completions.create.return_value = resp
+            result = extract_crop_as_html(img, "m")
+
+        assert result == "<p>good</p>"
+        # The corrupt cache file was removed (fresh call happened).
+        assert not os.path.exists(cache_file)
     finally:
         if os.path.exists(cache_file):
             os.unlink(cache_file)

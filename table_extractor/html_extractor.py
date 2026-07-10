@@ -21,6 +21,7 @@ from table_extractor.retry import (
     retry_with_backoff,
     BlankResponseError,
     is_blank_fragment,
+    RetryableError,
 )
 
 
@@ -31,6 +32,8 @@ PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "prompts", "html")
 OPENROUTER_URL = "https://openrouter.ai/api/v1"
 
 EXTRACTION_MAX_WORKERS = int(os.environ.get("EXTRACTION_MAX_WORKERS", "4"))
+
+MAX_EXTRACTION_MAX_TOKENS = 65536
 
 _client = None
 
@@ -111,8 +114,11 @@ def extract_crop_as_html(crop_image: Image.Image, model: str) -> str:
     img_bytes = buf.getvalue()
     b64 = base64.b64encode(img_bytes).decode("utf-8")
 
+    max_tokens = 16384
+
     def _call():
         """Make the cached LLM call for this crop."""
+        nonlocal max_tokens
         response = _get_client().chat.completions.create(
             model=model,
             messages=[
@@ -127,11 +133,29 @@ def extract_crop_as_html(crop_image: Image.Image, model: str) -> str:
                     ],
                 },
             ],
-            max_tokens=8192,
+            max_tokens=max_tokens,
         )
 
-        raw_content = response.choices[0].message.content or ""
+        choices = response.choices
+        if not choices:
+            raise BlankResponseError("LLM returned no choices (empty or null response)")
+        first_choice = choices[0]
+        if first_choice is None or first_choice.message is None:
+            raise BlankResponseError("LLM returned an empty choice or message")
+        raw_content = first_choice.message.content or ""
         html_fragment = clean_up_html_fragment(raw_content)
+
+        finish_reason = getattr(first_choice, "finish_reason", None)
+        if finish_reason == "length":
+            logger.warning(
+                "LLM HTML output truncated (finish_reason=length) for model=%s, max_tokens=%s",
+                model,
+                max_tokens,
+            )
+            max_tokens = min(max_tokens * 2, MAX_EXTRACTION_MAX_TOKENS)
+            raise RetryableError(
+                f"LLM output truncated (finish_reason=length) at max_tokens={max_tokens}"
+            )
 
         if is_blank_fragment(html_fragment):
             raise BlankResponseError("LLM returned an empty/blank HTML fragment")
@@ -145,26 +169,35 @@ def extract_crop_as_html(crop_image: Image.Image, model: str) -> str:
 
         return [html_fragment, usage_meta]
 
-    def _cached_extract():
+    def _cached_extract(force=False):
         return cached_call(
             image_bytes=img_bytes,
             stage="html_extract",
             model=model,
             fn=lambda: retry_with_backoff(_call),
-            force=False,
+            force=force,
             extra_key=system_prompt,
         )
+
+    def _invalidate_cache():
+        cache_key = _cache_key(img_bytes, "html_extract", model, system_prompt)
+        cache_file = os.path.join(CACHE_DIR, f"{cache_key}.json")
+        if os.path.exists(cache_file):
+            os.unlink(cache_file)
 
     try:
         result = _cached_extract()
 
+        # Defensive: a corrupt cache entry (e.g. None / not a list) must never
+        # reach the subscript below. Discard it and fetch fresh.
+        if not isinstance(result, (list, tuple)) or len(result) < 1:
+            _invalidate_cache()
+            result = _cached_extract(force=True)
+
         # Stale blank cache invalidation
         if is_blank_fragment(result[0]):
-            cache_key = _cache_key(img_bytes, "html_extract", model, system_prompt)
-            cache_file = os.path.join(CACHE_DIR, f"{cache_key}.json")
-            if os.path.exists(cache_file):
-                os.unlink(cache_file)
-            result = _cached_extract()
+            _invalidate_cache()
+            result = _cached_extract(force=True)
     except Exception as e:
         logger.error(f"LLM extraction failed for crop (model={model}): {e}")
         raise
@@ -239,9 +272,17 @@ class ExtractionJob:
                 self.error_message = "Job returned without setting outcome"
                 self.error_type = "retryable"
         except Exception as e:
-            self.result = "error"
-            self.error_message = str(e)
-            self.error_type = "retryable"
+            msg = str(e)
+            if "shutdown" in msg:
+                # Executor was torn down (e.g. server restart). Surfaced as a
+                # resumable interruption rather than a cryptic internal error.
+                self.result = "error"
+                self.error_message = "Extraction interrupted by server restart. Click Retry to resume."
+                self.error_type = "retryable"
+            else:
+                self.result = "error"
+                self.error_message = msg
+                self.error_type = "retryable"
         finally:
             _clear_extraction_in_progress(self.session_id)
             self.done_event.set()

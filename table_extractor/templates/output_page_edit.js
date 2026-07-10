@@ -83,6 +83,8 @@ document.addEventListener("DOMContentLoaded", function () {
         } else {
           saveButton.disabled = false;
           saveButton.textContent = "Save Changes";
+          var prevErr = saveButton.parentNode.querySelector(".save-error");
+          if (prevErr) prevErr.remove();
           var err = document.createElement("span");
           err.className = "save-error";
           err.textContent = data.message || "Save failed";

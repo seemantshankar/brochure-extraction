@@ -138,7 +138,7 @@ def retry_with_backoff(
             if isinstance(classified, RetryableError):
                 last_exc = classified
                 if attempt == max_attempts - 1:
-                    raise classified
+                    raise classified from e
                 if classified.retry_after is not None:
                     delay = min(classified.retry_after, max_delay)
                 else:
@@ -146,9 +146,11 @@ def retry_with_backoff(
                     delay += random.random() * jitter
                 time.sleep(delay)
             else:
-                raise classified
+                raise classified from e
     # Should be unreachable; last_exc is set if we exhausted retries.
-    raise last_exc
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("retry_with_backoff exhausted with no exception captured (max_attempts=0?)")
 
 
 def is_blank_fragment(fragment: str) -> bool:

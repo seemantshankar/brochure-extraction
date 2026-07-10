@@ -45,7 +45,16 @@ def _get_client():
         )
     return _client
 
-MODEL_ID = os.environ["PAGE_ANALYSIS_MODEL_ID"]
+
+def _get_model_id() -> str:
+    """Return the page-analysis model ID, raising a clear error if unset."""
+    model_id = os.environ.get("PAGE_ANALYSIS_MODEL_ID")
+    if not model_id:
+        raise RuntimeError(
+            "Missing environment variable: PAGE_ANALYSIS_MODEL_ID. "
+            "Set it in your .env file before running the server."
+        )
+    return model_id
 
 ANALYSIS_PROMPT = """You are analyzing a single page of a product brochure / spec sheet.
 Your job is to determine whether the page is "Simple" or "Complex" for processing by a small and cheap vision LLM.
@@ -91,7 +100,7 @@ def analyze_page(image_path: str) -> dict:
     def _call_api():
         """Inner API call, wrapped in retry_with_backoff."""
         response = _get_client().chat.completions.create(
-            model=MODEL_ID,
+            model=_get_model_id(),
             messages=[
                 {"role": "user", "content": [
                     {"type": "text", "text": ANALYSIS_PROMPT},
@@ -107,7 +116,7 @@ def analyze_page(image_path: str) -> dict:
         result = cached_call(
             image_bytes=image_bytes,
             stage="analyze",
-            model=MODEL_ID,
+            model=_get_model_id(),
             fn=lambda: [retry_with_backoff(_call_api)],
             force=False,
             extra_key=ANALYSIS_PROMPT,

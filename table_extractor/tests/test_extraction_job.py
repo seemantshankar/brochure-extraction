@@ -2,6 +2,7 @@ from __future__ import annotations
 import os
 import sys
 import json
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -24,6 +25,7 @@ class _FakeSM:
     def __init__(self, base):
         self.base = base
         self._store = {}
+        self._locks = {}
 
     def get_session_dir(self, sid):
         return os.path.join(self.base, sid)
@@ -44,7 +46,9 @@ class _FakeSM:
 
     def metadata_lock(self, sid):
         import threading
-        return threading.Lock()
+        if sid not in self._locks:
+            self._locks[sid] = threading.Lock()
+        return self._locks[sid]
 
 
 def _make_session(base, sid, pages, analyzed=True):
@@ -137,7 +141,7 @@ def test_duplicate_job_rejected(tmp_path):
             _start_extraction_job(sid, sm, str(tmp_path / "crops"),
                                   str(tmp_path / sid / "pages"),
                                   str(tmp_path / "out"), "m")
-            assert False, "expected RuntimeError"
+            pytest.fail("expected RuntimeError")
         except RuntimeError as e:
             assert "already running" in str(e)
     import time

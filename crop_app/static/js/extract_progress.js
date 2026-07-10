@@ -66,7 +66,15 @@ document.addEventListener("DOMContentLoaded", function () {
       retryBtn.disabled = true;
       retryBtn.textContent = "Retrying...";
       fetch(url, { method: "POST" })
-        .then(function () { window.location.reload(); })
+        .then(function (response) {
+          if (response.ok) {
+            window.location.reload();
+          } else {
+            retryBtn.disabled = false;
+            retryBtn.textContent = "Retry";
+            retryMsg.textContent = "Retry failed (HTTP " + response.status + "). Please try again.";
+          }
+        })
         .catch(function () {
           retryBtn.disabled = false;
           retryBtn.textContent = "Retry";

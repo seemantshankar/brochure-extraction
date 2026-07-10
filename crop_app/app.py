@@ -288,7 +288,7 @@ def create_app():
             crop_dir = os.path.join(app.config["CROP_DIR"], session_id)
             meta = normalize_legacy_meta(meta, fragments_dir, crop_dir)
             page_index = data["page_index"]
-            if page_index >= len(meta["pages"]):
+            if not isinstance(page_index, int) or page_index < 0 or page_index >= len(meta["pages"]):
                 return jsonify({"error": "Invalid page_index"}), 400
             page_info = meta["pages"][page_index]
             page_path = os.path.join(_sm.get_page_dir(session_id), page_info["path"])
@@ -386,7 +386,7 @@ def create_app():
             crop_dir = os.path.join(app.config["CROP_DIR"], session_id)
             meta = normalize_legacy_meta(meta, fragments_dir, crop_dir)
             page_index = data["page_index"]
-            if page_index >= len(meta["pages"]):
+            if not isinstance(page_index, int) or page_index < 0 or page_index >= len(meta["pages"]):
                 return jsonify({"error": "Invalid page_index"}), 400
             page_info = meta["pages"][page_index]
             filename = data["filename"]
@@ -403,7 +403,7 @@ def create_app():
             if os.path.exists(crop_path):
                 os.remove(crop_path)
             before = len(page_info.get("crops", []))
-            page_info["crops"] = [c for c in page_info.get("crops", []) if c.get("filename") != filename]
+            page_info["crops"] = [c for c in page_info.get("crops", []) if (c.get("filename") or c.get("path")) != filename]
             removed = before - len(page_info["crops"])
             on_crop_mutation(meta, _sm, session_id, app.config["EXTRACTED_DIR"])
             _sm.save_meta_atomic(session_id, meta)
@@ -491,7 +491,7 @@ def create_app():
         page_index = data["page_index"]
         with _sm.metadata_lock(session_id):
             meta = _sm.load_meta(session_id)
-            if page_index >= len(meta["pages"]):
+            if not isinstance(page_index, int) or page_index < 0 or page_index >= len(meta["pages"]):
                 return jsonify({"error": "Invalid page_index"}), 400
 
             page_info = meta["pages"][page_index]
@@ -513,7 +513,7 @@ def create_app():
         page_index = data["page_index"]
         with _sm.metadata_lock(session_id):
             meta = _sm.load_meta(session_id)
-            if page_index >= len(meta["pages"]):
+            if not isinstance(page_index, int) or page_index < 0 or page_index >= len(meta["pages"]):
                 return jsonify({"error": "Invalid page_index"}), 400
 
             page_info = meta["pages"][page_index]
@@ -618,6 +618,9 @@ def create_app():
             yield _sse_event({"status": "starting"})
             while True:
                 meta = _sm.load_meta(session_id)
+                if meta is None:
+                    yield _sse_event({"status": "error", "message": "Session no longer exists"})
+                    return
                 tasks = meta.get("extraction_tasks", [])
                 completed = sum(1 for t in tasks if t["extraction_status"] == "extracted")
                 total = len(tasks)
@@ -721,7 +724,7 @@ def create_app():
         if not _sm.session_exists(session_id):
             return "Session not found", 404
 
-        base_dir = app.config["EXTRACTED_DIR"]
+        base_dir = os.path.realpath(app.config["EXTRACTED_DIR"])
         session_dir = os.path.realpath(os.path.join(base_dir, session_id))
         if not session_dir.startswith(base_dir + os.sep):
             return "Session not found", 404

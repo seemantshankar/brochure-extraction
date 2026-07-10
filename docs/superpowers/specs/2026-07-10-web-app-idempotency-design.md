@@ -419,8 +419,12 @@ class ExtractionJob:
         self.error_type = None  # "auth" | "credits" | "retryable" | "malformed_output"
 
     def run(self):
-        """Execute the extraction job. Called in background thread."""
-        _set_extraction_in_progress(self.session_id)
+        """Execute the extraction job. Called in background thread.
+
+        Note: _set_extraction_in_progress was called in _start_extraction_job()
+        BEFORE this thread started, so the mutation guard is race-free.
+        """
+        # _set_extraction_in_progress is NOT called here (too late — see §3.6).
         try:
             self._execute_extraction()
             # _execute_extraction sets self.result directly. If it returned
@@ -551,10 +555,11 @@ def _execute_extraction(self):
             self.result = "error"
             self.error_message = terminal.get("extraction_error") or "Tasks failed"
             self.error_type = terminal.get("extraction_error_type") or "retryable"
-            return
-        # Nothing failed — run assembly
-        self._run_assembly(meta)
-        return
+             return
+         # Nothing failed — run assembly
+         self._run_assembly(meta)
+         self.result = "done"
+         return
 
     # 3. Zero-task short-circuit (safety; also guards semaphore deadlock)
     max_workers = min(self.max_workers, len(tasks_to_run))
@@ -709,7 +714,12 @@ def _get_active_job(session_id):
 
 def _start_extraction_job(session_id, sm, crop_root, page_dir, output_dir,
                            model, max_workers=4, retry_nonretryable=False):
-    """Create and start a new extraction job."""
+    """Create and start a new extraction job.
+
+    Atomically registers the in-progress state BEFORE starting the thread,
+    so crop mutation guards in §2.4 observe an active extraction immediately
+    after this function returns — no race window exists.
+    """
     with _jobs_lock:
         existing = _active_jobs.get(session_id)
         if existing and not existing.done_event.is_set():
@@ -726,6 +736,9 @@ def _start_extraction_job(session_id, sm, crop_root, page_dir, output_dir,
             retry_nonretryable=retry_nonretryable,
         )
         _active_jobs[session_id] = job
+        # Set in-progress flag ATOMICALLY with job registration, under the
+        # same lock. This is the moment mutation guards begin to reject crops.
+        _set_extraction_in_progress(session_id)
 
         thread = threading.Thread(target=job.run, name=f"extract-{session_id[:8]}", daemon=True)
         thread.start()
@@ -1526,13 +1539,15 @@ This normalization happens at the start of any route that reads `meta.json` for 
 
 ### 13.1 Behavior
 
-When a client reconnects to `/extract-progress/<session_id>`:
+`/extract-progress/<session_id>` is purely observational — it never starts, resumes, or triggers any background work. Reconnecting clients derive their view from the current job state and disk state:
 
-- **Job already running**: Subscribe to the active job's `done_event` (see §3.6 Job Lifecycle Management)
-- **No active job, `.complete` exists**: Yield `{"status": "done"}` immediately
-- **No active job, partial fragments**: Start extraction, count pre-existing tasks as done, resume remaining
-- **No active job, all tasks `extracted`, no `.complete`**: Run assembly only
-- **No active job, no state**: Fresh extraction from scratch
+- **Job already running** (`_get_active_job(session_id)` returns a live job): Subscribe to the active job's `done_event`. Emit per-tick `{"status": "progress"}` events until `done_event.is_set()`, then emit the terminal event derived from the job's `result` (see §3.3).
+- **No active job, `.complete` marker exists**: Yield `{"status": "done"}` with the current completion counter and return.
+- **No active job, no `.complete`, failed tasks remain in `meta.json`**: Yield `{"status": "error"}` with the terminal task's `extraction_error_type` and `extraction_error` (see §3.3 derivation rules), and return. The user must click a Retry button (which calls `POST /extract-html/<session_id>`) to restart; reconnecting alone does not retry.
+- **No active job, no `.complete`, no failed tasks, zero `extraction_tasks`**: No prior extraction has been started for this session. Yield `{"status": "idle", "message": "Extraction not started"}` and return.
+- **No active job, no `.complete`, no failed tasks, but `extraction_tasks` exist with `extracted`/`pending`**: Assembly has not yet published output, but a prior run was interrupted or the user never called POST again. Yield `{"status": "paused", "message": "Click Retry to resume"}` and return.
+
+Under no circumstances does GET `extract-progress` mutate `meta.json`, delete fragments, delete `.complete`, or call `_start_extraction_job()`.
 
 ### 13.2 Progress Counter
 
@@ -1548,13 +1563,14 @@ The progress counter reflects **total** completed work (pre-existing + just-comp
 
 | Missing Field | Default Behavior |
 |---|---|
-| `analysis_status` | `"done"` if `classification` set or `complex: true`; else `"pending"` |
-| `extraction_status` on page | `"pending"` |
-| `extraction_status` on crop/task | `"pending"` |
-| `extraction_tasks` on page | Construct from current pages + crops (see §12.3) |
-| `.complete` marker | No output — assembly needed |
+| `analysis_status` on a page | `"done"` if `classification` set or `complex: true`; else `"pending"` |
+| `extraction_tasks` (top-level) | Construct by calling `derive_required_tasks(meta)` against the current `pages[]` + crops; tasks without an on-disk fragment start as `"pending"`. (See §2.1.) |
+| `next_crop_id` (top-level) | Derived from the existing crops directory: compute `max(existing numeric IDs)` + 1. (See §1.1.) |
+| `.complete` marker | Absent — assembly is needed |
 
-No migration script is needed. The normalization logic (§12.3) handles legacy data on first access.
+Note: there is no per-page `extraction_status`. Page-level completion is derived from the top-level tasks whose `page_idx` matches.
+
+No migration script is needed. The normalization logic in §14 runs on first access by `POST /extract-html` or SSE reconnection.
 
 ### 14.2 No Schema Migration
 
@@ -1602,10 +1618,10 @@ All state lives on disk and persists across app restarts:
 | `crop_app/app.py` | Use `sm.metadata_lock()` + `sm.save_meta_atomic()` for all meta writes. Add background job start to extraction route. Update `/extract-html/` prerequisite (remove crop check, require analysis done). Add `/analyze/` immediate persistence. Update `/trim/`, `/delete-crop/`, `/commit/` with `on_crop_mutation()` invalidation. Update all output-serving routes to check `.complete`. |
 | `crop_app/session_manager.py` | Add `metadata_lock()`, `save_meta_atomic()`, `get_extraction_fragments_dir()`. Keep existing methods. |
 | `table_extractor/retry.py` | **NEW** — Full exception hierarchy (`PipelineCallError`, `RetryableError`, `NonRetryableError`, `AuthError`, `CreditsExhaustedError`, `BlankResponseError`, `MalformedOutputError`). `retry_with_backoff()` with `max_attempts` semantics, jitter, Retry-After parsing. `classify_api_error()`. `is_blank_fragment()`. |
-| `table_extractor/html_extractor.py` | Add `ExtractionJob` class with background thread (`done_event`, `abort_flag`, `retry_nonretryable` flag). Add `derive_required_tasks()`, `reconcile_tasks()`, `on_crop_mutation()`. Add `_extraction_in_progress` set + guard. Rewrite `_execute_extraction()` with bounded post-acquire abort checks and `retry_nonretryable` filter. Worker opens image via `Image.open()` and passes `PIL.Image` to `extract_crop_as_html()`. `_run_assembly()` properly deletes `.complete` first, reads fragments from disk, calls `write_page_files()`, writes marker. Blank response detection + stale cache delete-and-retry. |
+| `table_extractor/html_extractor.py` | Add `ExtractionJob` class with background thread (`done_event`, `abort_flag`, `retry_nonretryable` flag). Add `derive_required_tasks()`, `reconcile_tasks()`, `on_crop_mutation()`. Add `_extraction_in_progress` set + guard. Rewrite `_execute_extraction()` with bounded post-acquire abort checks and `retry_nonretryable` filter. Worker opens image via `Image.open()` and passes `PIL.Image` to `extract_crop_as_html()`. `_run_assembly()` deletes `.complete` first, reads fragments from disk, calls `write_page_files()`, then writes `.complete` via `_write_complete_marker()`. Blank response detection + stale cache delete-and-retry. |
 | `table_extractor/cache.py` | Export `_cache_key()` and `CACHE_DIR` for stale blank cache deletion from `html_extractor.py`. |
 | `crop_app/crop_manager.py` | Rewrite `_next_crop_index()` to use persistent `next_crop_id` from `meta.json` instead of file-count-based counter. |
-| `table_extractor/html_assembler.py` | `write_page_files()` writes `.complete` marker atomically after all files. |
+| `table_extractor/html_assembler.py` | No change — `write_page_files()` continues to write page HTML files and `index.html`. The `.complete` marker is written by `_run_assembly()` after `write_page_files()` returns (see §5.2). |
 | `crop_app/templates/sessions.html` | Analysis/extraction status indicators from task-level data. |
 | `crop_app/templates/annotate.html` | Error badges for analysis failures. |
 | `crop_app/templates/extract_progress.html` | Handle resume states, error types, non-retryable error banners, explicit retry button. |

@@ -1,4 +1,4 @@
-from table_extractor.cache import cached_call, _cache_key
+from table_extractor.cache import CACHE_DIR, cached_call, _cache_key
 import concurrent.futures
 import json
 import os
@@ -77,3 +77,12 @@ def test_concurrent_cached_call_writes_valid_json(tmp_path):
         cache.CACHE_DIR = orig_dir
         if os.path.exists(test_dir):
             shutil.rmtree(test_dir)
+
+
+def test_cache_key_stable_and_extra_key_sensitive():
+    k1 = _cache_key(b"abc", "html_extract", "m1", "promptA")
+    k2 = _cache_key(b"abc", "html_extract", "m1", "promptA")
+    k3 = _cache_key(b"abc", "html_extract", "m1", "promptB")
+    assert k1 == k2
+    assert k1 != k3
+    assert isinstance(CACHE_DIR, str)

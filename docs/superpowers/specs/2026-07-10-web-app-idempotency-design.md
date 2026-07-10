@@ -67,44 +67,38 @@ When `/commit` creates a new crop:
 
 ### 1.2 Unified Task Schema in `meta.json`
 
-Each page gains an `extraction_tasks` array. Every task — whether whole-page (Simple) or crop-level (Complex) — uses the same schema:
+`meta.json` gains a **top-level** `extraction_tasks` array. Every extraction unit — whether whole-page (Simple) or crop-level (Complex) — uses the same flat schema:
 
 ```json
 {
+  "files": ["brochure.pdf"],
+  "pages": [...],
+  "next_crop_id": 4,
   "extraction_tasks": [
+    {
+      "task_id": "page-1",
+      "page_idx": 1,
+      "kind": "page",
+      "extraction_status": "pending" | "extracted" | "failed",
+      "extraction_error": null | "error message",
+      "extraction_error_type": null | "retryable" | "auth" | "credits" | "malformed_output",
+      "fragment_path": null | "extraction_fragments/page-1.html"
+    },
     {
       "task_id": "crop_003",
       "page_idx": 0,
       "kind": "crop",
       "crop_filename": "crop_003.png",
-      "extraction_status": "pending" | "extracted" | "failed",
-      "extraction_error": null | "error message",
-      "extraction_error_type": null | "retryable" | "auth" | "credits" | "malformed_output",
-      "fragment_path": "extraction_fragments/crop_003.html"
-    },
-    {
-      "task_id": "page-2",
-      "page_idx": 2,
-      "kind": "page",
       "extraction_status": "extracted",
       "extraction_error": null,
       "extraction_error_type": null,
-      "fragment_path": "extraction_fragments/page-2.html"
+      "fragment_path": "extraction_fragments/crop_003.html"
     }
   ]
 }
 ```
 
-Each page *also* gains a page-level completion record:
-
-```json
-{
-  "extraction_status": "pending" | "done",
-  "extraction_error": null | "error message"
-}
-```
-
-Page-level `extraction_status` transitions to `"done"` only after assembly writes `.complete` (see §5). A page with all tasks `"extracted"` but assembly not yet run remains `"pending"` at the page level.
+There is no per-page `extraction_status` field. Page-level completion is derived from the task set: a page is complete when **all** its tasks have `"extracted"` status and the corresponding fragment files exist on disk. The session is complete when all tasks are extracted, assembly has run, and the `.complete` marker exists. This eliminates schema drift — one set of tasks is the sole authority on extraction progress.
 
 ### 1.3 Why Not Crop List Index
 
@@ -123,47 +117,45 @@ Using `crop_filename` (without `.png`) as the `task_id` ensures that the fragmen
 
 ### 2.1 The Reconciliation Function
 
-A single function derives the **exact** required task set from current state. It is the sole authority on what tasks should exist and their identity.
+A single pure function derives the **exact** required task set from current state. It does not touch `meta.json`, fragments, or `.complete`. It returns what the task list *should* look like given the current classifications and crop geometry.
 
 ```python
 def derive_required_tasks(meta: dict) -> list[dict]:
     """Derive the canonical set of extraction tasks from current meta state.
 
-    Called after every crop mutation and before extraction starts.
     Returns a list of task dicts with stable task_ids.
+    Pure function — no side effects.
     """
     tasks = []
     for page_idx, page_info in enumerate(meta.get("pages", [])):
-        classification = page_info.get("classification")
-        if classification is None:
-            continue  # not yet analyzed, no tasks
+        classification = page_info.get("analysis_status")
+        if classification != "done":
+            continue  # not yet analyzed, no task
 
+        class_value = page_info.get("classification")
         crops = page_info.get("crops", [])
 
-        if classification == "Simple":
-            # Simple page → one whole-page task
+        if class_value == "Simple":
             tasks.append({
                 "task_id": f"page-{page_idx}",
                 "page_idx": page_idx,
                 "kind": "page",
-                "image_source": "page",  # use page image
+                "image_source": "page",
             })
-        elif classification == "Complex":
+        elif class_value == "Complex":
             if len(crops) > 0:
-                # Complex page with crops → one task per crop, sorted by bbox y0
                 sorted_crops = sorted(crops, key=lambda c: c["bbox"][1])
                 for crop_info in sorted_crops:
                     crop_filename = crop_info["filename"]
-                    task_id = os.path.splitext(crop_filename)[0]  # strip .png
+                    task_id = os.path.splitext(crop_filename)[0]
                     tasks.append({
                         "task_id": task_id,
                         "page_idx": page_idx,
                         "kind": "crop",
                         "crop_filename": crop_filename,
-                        "image_source": "crop",  # use crop image
+                        "image_source": "crop",
                     })
             else:
-                # Complex page with no crops → whole-page task (fallback)
                 tasks.append({
                     "task_id": f"page-{page_idx}",
                     "page_idx": page_idx,
@@ -174,120 +166,206 @@ def derive_required_tasks(meta: dict) -> list[dict]:
     return tasks
 ```
 
-### 2.2 Reconciliation on Crop Mutation
+### 2.2 Two Reconciliation Modes
 
-Every crop mutation endpoint (`/commit`, `/trim`, `/delete-crop`) must:
+The derivation function produces the desired task set, but two different modes of reconciling with the current state exist:
+
+#### `reconcile_tasks(meta, desired_tasks)` — used at job start
+
+Preserves statuses for surviving tasks. Does **not** delete fragments or `.complete`. This is called by the background job at start to sync the task list with current geometry, pick up any fragment files that exist on disk (from a prior partial run), and avoid duplicate work.
 
 ```python
-def on_crop_mutation(session_id, sm):
-    """Called after applying any crop mutation to meta.json.
+def reconcile_tasks(meta: dict, desired_tasks: list) -> None:
+    """Reconcile meta["extraction_tasks"] with desired set. In-place mutation.
 
-    1. Derive the new required task set.
-    2. Compare with existing tasks.
-    3. Delete fragments for removed/orphaned tasks.
-    4. Add new tasks with pending status.
-    5. Remove .complete marker.
+    - Tasks whose task_id is in desired set: preserve status and fragment_path
+    - Tasks whose task_id is NOT in desired set: dropped from the list
+    - Desired tasks not yet in the list: added with "pending" status
+    - If a surviving task has extraction_status=="extracted" but fragment file
+      is missing from disk: reset to "pending"
+    - If a surviving task has status!="extracted" but fragment file exists:
+      upgrade to "extracted" and set fragment_path
+
+    Does NOT delete .complete marker. Does NOT remove .complete.
     """
-    with sm.metadata_lock(session_id):
-        meta = sm.load_meta(session_id)
+    existing_tasks = meta.get("extraction_tasks", [])
+    desired_ids = {t["task_id"] for t in desired_tasks}
+    existing_by_id = {t["task_id"]: t for t in existing_tasks}
+    fragments_dir = _get_extraction_fragments_dir()
 
-        # 1. Derive new tasks
-        new_tasks = derive_required_tasks(meta)
-        new_task_ids = {t["task_id"] for t in new_tasks}
-
-        # 2. Get existing tasks
-        existing_tasks = meta.get("extraction_tasks", [])
-        existing_task_ids = {t["task_id"] for t in existing_tasks}
-
-        # 3. Fragment dir
-        fragments_dir = sm.get_extraction_fragments_dir(session_id)
-
-        # 4. Delete fragments for removed tasks
-        removed_ids = existing_task_ids - new_task_ids
-        for task in existing_tasks:
-            if task["task_id"] in removed_ids:
-                fragment_path = task.get("fragment_path")
-                if fragment_path:
-                    full_path = os.path.join(fragments_dir, os.path.basename(fragment_path))
-                    if os.path.exists(full_path):
-                        os.unlink(full_path)
-
-        # 5. Build new task list preserving status for surviving tasks
-        surviving = {t["task_id"]: t for t in existing_tasks if t["task_id"] in new_task_ids}
-        final_tasks = []
-        for req in new_tasks:
-            if req["task_id"] in surviving:
-                # Task still exists → preserve its status
-                final_tasks.append(surviving[req["task_id"]])
-            else:
-                # New task → pending
-                final_tasks.append({
-                    **req,
-                    "extraction_status": "pending",
+    final = []
+    for desired in desired_tasks:
+        tid = desired["task_id"]
+        if tid in existing_by_id:
+            existing = existing_by_id[tid]
+            # Filesystem-level validation
+            frag_path = existing.get("fragment_path")
+            has_fragment = bool(frag_path and os.path.exists(os.path.join(fragments_dir, os.path.basename(frag_path))))
+            if existing["extraction_status"] == "extracted" and not has_fragment:
+                # Fragment lost — reset to pending
+                existing["extraction_status"] = "pending"
+                existing["fragment_path"] = None
+                existing["extraction_error"] = None
+                existing["extraction_error_type"] = None
+            elif existing["extraction_status"] != "extracted" and has_fragment:
+                # Fragment exists but status is not extracted — accept the fragment
+                existing["extraction_status"] = "extracted"
+                if not existing.get("fragment_path"):
+                    existing["fragment_path"] = f"extraction_fragments/{tid}.html"
+                existing["extraction_error"] = None
+                existing["extraction_error_type"] = None
+            final.append(existing)
+        else:
+            # Brand new task
+            frag_path = f"extraction_fragments/{tid}.html"
+            if os.path.exists(os.path.join(fragments_dir, tid + ".html")):
+                final.append({
+                    **desired,
+                    "extraction_status": "extracted",
+                    "fragment_path": frag_path,
                     "extraction_error": None,
                     "extraction_error_type": None,
+                })
+            else:
+                final.append({
+                    **desired,
+                    "extraction_status": "pending",
                     "fragment_path": None,
+                    "extraction_error": None,
+                    "extraction_error_type": None,
                 })
 
-        # 6. Persist
-        meta["extraction_tasks"] = final_tasks
-
-        # 7. Remove .complete marker
-        _remove_output_marker(session_id, sm)
-
-        sm.save_meta_atomic(session_id, meta)
+    meta["extraction_tasks"] = final
 ```
+
+#### `on_crop_mutation(meta, sm, session_id, output_dir)` — used during crop mutations
+
+Invalidates tasks whose underlying data changed, deletes their fragments, and removes the `.complete` marker. Called after every `/commit`, `/delete-crop`, `/trim` operation. Returns 409 if an extraction job is currently running for the session.
+
+```python
+def on_crop_mutation(meta: dict, sm, session_id: str, output_dir: str) -> None:
+    """Called after a crop mutation to invalidate stale fragments and tasks.
+
+    In-place mutation on meta. Deletes fragments and .complete marker.
+    """
+    if _is_extraction_in_progress(session_id):
+        raise ExtractionInProgressError("Extraction job is running — cancel it or wait before mutating crops")
+
+    desired_tasks = derive_required_tasks(meta)
+    desired_ids = {t["task_id"] for t in desired_tasks}
+
+    existing_tasks = meta.get("extraction_tasks", [])
+    fragments_dir = sm.get_extraction_fragments_dir(session_id)
+
+    # Delete fragments for tasks that no longer exist
+    for task in existing_tasks:
+        if task["task_id"] not in desired_ids:
+            frag_path = task.get("fragment_path")
+            if frag_path:
+                full_path = os.path.join(fragments_dir, os.path.basename(frag_path))
+                if os.path.exists(full_path):
+                    os.unlink(full_path)
+
+    # Rebuild task list: surviving tasks keep their status, new tasks are pending
+    existing_by_id = {t["task_id"]: t for t in existing_tasks}
+    final = []
+    for desired in desired_tasks:
+        tid = desired["task_id"]
+        if tid in existing_by_id:
+            final.append(existing_by_id[tid])
+        else:
+            final.append({
+                **desired,
+                "extraction_status": "pending",
+                "extraction_error": None,
+                "extraction_error_type": None,
+                "fragment_path": None,
+            })
+
+    meta["extraction_tasks"] = final
+    _remove_output_marker(session_id, output_dir)
+```
+
+### 2.3 Mutation Endpoints: Trim, Commit, Delete
+
+Each mutation endpoint is a single locked transaction. The pattern is:
+
+1. Acquire `metadata_lock`, re-read meta.json
+2. Check `_is_extraction_in_progress()` → raise 409 if so
+3. Apply the mutation (modify crops/image bytes)
+4. Call `on_crop_mutation()` to invalidate stale state
+5. Persist meta.json atomically
+6. Release lock
+
+```python
+# /trim handler (complete transaction):
+def handle_trim(session_id, crop_filename, new_bbox, sm, output_dir):
+    with sm.metadata_lock(session_id):
+        if _is_extraction_in_progress(session_id):
+            return jsonify({"status": "error", "message": "Extraction in progress"}), 409
+
+        meta = sm.load_meta(session_id)
+
+        # 1. Find crop record and reset its task status BEFORE trimming the image
+        fragments_dir = sm.get_extraction_fragments_dir(session_id)
+        task_id = os.path.splitext(crop_filename)[0]
+        for task in meta.get("extraction_tasks", []):
+            if task["task_id"] == task_id:
+                task["extraction_status"] = "pending"
+                task["extraction_error"] = None
+                task["extraction_error_type"] = None
+                # Delete fragment file
+                frag_path = os.path.join(fragments_dir, f"{task_id}.html")
+                if os.path.exists(frag_path):
+                    os.unlink(frag_path)
+                task["fragment_path"] = None
+                break
+
+        # 2. Apply the actual trim to the image
+        cm = CropManager(app.config["CROP_DIR"])
+        crop_path = os.path.join(cm.crop_root, session_id, crop_filename)
+        cm.trim_crop(crop_path, new_bbox)
+
+        # 3. Reconcile tasks (handles any task-shape changes)
+        on_crop_mutation(meta, sm, session_id, output_dir)
+
+        # 4. Persist atomic write
+        sm.save_meta_atomic(session_id, meta)
+
+    return jsonify({"status": "ok"})
+```
+
+`/commit` and `/delete-crop` follow the same pattern: lock → check active job → apply mutation → `on_crop_mutation()` → persist → unlock.
 
 **Why this handles all task-shape changes**:
-- Adding first crop to Complex page: `derive_required_tasks` now produces crop tasks instead of a whole-page task → the `page-{idx}` task is in `removed_ids` → its fragment is deleted → crop tasks are added as `pending`
-- Deleting last crop from Complex page: `derive_required_tasks` produces a whole-page task → old crop task fragments are deleted → new `page-{idx}` task is added
-- Trimming a crop: The crop filename stays the same → task_id stays the same → task is in `surviving` → BUT the fragment file must also be deleted because the image changed. This is handled by the trim endpoint calling `_remove_fragment_for_task()` before `on_crop_mutation()`
+- Adding first crop to Complex page: `derive_required_tasks` now produces crop tasks instead of a whole-page task → the `page-{idx}` task is in `removed_ids` → its fragment is deleted → crop tasks are added as `"pending"`
+- Deleting last crop from Complex page: `derive_required_tasks` produces a whole-page task → old crop fragments deleted → new `page-{idx}` task added
+- Trimming a crop: The crop filename stays the same → the specific handler resets the task's own status before calling `on_crop_mutation()`. If the trim changes crop geometry, `on_crop_mutation()` catches this through reconciliation.
 
-### 2.3 Trim-Specific Fragment Invalidation
+### 2.4 Extraction-In-Progress Guard
 
-Trim modifies the crop image in place (same filename, different content). The task_id is the same but the fragment is stale:
-
-```python
-# In /trim handler:
-fragments_dir = sm.get_extraction_fragments_dir(session_id)
-task_id = os.path.splitext(crop_filename)[0]  # same as task_id
-fragment_path = os.path.join(fragments_dir, f"{task_id}.html")
-if os.path.exists(fragment_path):
-    os.unlink(fragment_path)
-
-# Then apply the trim to the image
-# Then call on_crop_mutation() which will reset the task's status to pending
-```
-
-Actually, `on_crop_mutation()` only handles removed tasks. For trim (same task_id, stale fragment), we need an explicit step **before** calling `on_crop_mutation()`:
+To prevent unsafe concurrent mutation during extraction, a module-level set tracks active jobs:
 
 ```python
-# /trim handler (corrected):
-fragments_dir = sm.get_extraction_fragments_dir(session_id)
-task_id = os.path.splitext(crop_filename)[0]
-_fragment_path = os.path.join(fragments_dir, f"{task_id}.html")
-if os.path.exists(_fragment_path):
-    os.unlink(_fragment_path)
+_extraction_in_progress = set()  # session_ids with active extraction jobs
+_extraction_lock = threading.Lock()
 
-# Apply trim to image
-# ...
+def _is_extraction_in_progress(session_id: str) -> bool:
+    with _extraction_lock:
+        return session_id in _extraction_in_progress
 
-# Reconcile — but we need to reset this task's status too
-with sm.metadata_lock(session_id):
-    meta = sm.load_meta(session_id)
-    # Reset task status for the trimmed crop
-    for task in meta.get("extraction_tasks", []):
-        if task["task_id"] == task_id:
-            task["extraction_status"] = "pending"
-            task["extraction_error"] = None
-            task["extraction_error_type"] = None
-            task["fragment_path"] = None
-    # Remove .complete marker
-    _remove_output_marker(session_id, sm)
-    sm.save_meta_atomic(session_id, meta)
+def _set_extraction_in_progress(session_id: str):
+    with _extraction_lock:
+        _extraction_in_progress.add(session_id)
+
+def _clear_extraction_in_progress(session_id: str):
+    with _extraction_lock:
+        _extraction_in_progress.discard(session_id)
 ```
 
-### 2.4 Fragment Layout
+The background `ExtractionJob` sets this flag when starting and clears it when finished (in `finally`).
+
+### 2.5 Fragment Layout
 
 ```
 uploads/<session_id>/
@@ -297,6 +375,17 @@ uploads/<session_id>/
     crop_003.html     # Complex page, crop 3
     crop_007.html     # Complex page, crop 7
 ```
+
+## 3. Background Job & SSE Observation
+
+### 3.1 Roles: Start Endpoint vs SSE Subscriber
+
+Two distinct endpoints govern extraction:
+
+- **`POST /extract-html/<session_id>`** — the *only* way to start or retry an extraction job. Accepts a `retry_nonretryable` query parameter (see §3.4). Returns 409 if extraction is already in progress.
+- **`GET /extract-progress/<session_id>`** — purely observes the job. **NEVER** starts or resumes a job. Returns the current disk state (including failed tasks). If no job is running, derives the terminal SSE event from `meta.json` task states and `.complete` existence.
+
+This separation means: navigating to the extraction page shows failures but doesn't auto-retry them. The user must explicitly click "Retry" (which calls POST) to restart after non-retryable errors.
 
 ### 3.2 Extraction Job Model
 
@@ -308,44 +397,50 @@ The extraction job runs in a background thread **independent of SSE requests**. 
 class ExtractionJob:
     """Background extraction job for a session."""
 
-    def __init__(self, session_id, sm, crop_root, model, max_workers=4):
+    def __init__(self, session_id, sm, crop_root, page_dir, output_dir, model,
+                 max_workers=4, retry_nonretryable=False):
         self.session_id = session_id
         self.sm = sm
         self.crop_root = crop_root
+        self.page_dir = page_dir
+        self.output_dir = output_dir
         self.model = model
         self.max_workers = max_workers
+        self.retry_nonretryable = retry_nonretryable
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
 
         self.cancel_event = threading.Event()
-        self.done_event = threading.Event()  # Set when job completes (success or failure)
-        self.abort_flag = threading.Event()  # Set on non-retryable error
+        self.done_event = threading.Event()
+        self.abort_flag = threading.Event()
 
-        self.result = None  # Final result: "done", "error", or "cancelled"
+        # Outcome: set ONLY by _execute_extraction(). Never overwritten by run().
+        self.result = None      # "done" | "error" | "cancelled"
         self.error_message = None
-        self.error_type = None  # "auth", "credits", "retryable"
+        self.error_type = None  # "auth" | "credits" | "retryable" | "malformed_output"
 
     def run(self):
         """Execute the extraction job. Called in background thread."""
+        _set_extraction_in_progress(self.session_id)
         try:
             self._execute_extraction()
-            self.result = "done" if not self.abort_flag.is_set() else "error"
+            # _execute_extraction sets self.result directly. If it returned
+            # without setting result (unexpected), mark as error.
+            if self.result is None:
+                self.result = "error"
+                self.error_message = "Job returned without setting outcome"
+                self.error_type = "retryable"
         except Exception as e:
+            # Truly unexpected failure
             self.result = "error"
             self.error_message = str(e)
             self.error_type = "retryable"
         finally:
+            _clear_extraction_in_progress(self.session_id)
             self.done_event.set()
-
-    def _execute_extraction(self):
-        """Core extraction logic (detailed in §3.3)."""
-        # ... (see §3.3)
-        pass
+            self.executor.shutdown(wait=False)
 ```
 
-**Why this is correct**:
-1. **Job independence**: The job runs to completion regardless of SSE client connections/disconnections
-2. **Multiple observers**: Multiple SSE clients can subscribe to the same job via `done_event`
-3. **Clean cancellation**: `cancel_event` is only set on explicit user cancellation, not on client disconnect
-4. **Clear completion**: `done_event.is_set()` reliably indicates job completion
+**Key design**: `_execute_extraction()` is the **sole writer** of `self.result`. `run()` only fills in a fallback for truly unexpected exceptions — it never overwrites a value that `_execute_extraction` set. Cancelled and retryable-failure jobs are therefore always reported correctly.
 
 ### 3.3 SSE Subscriber Pattern
 
@@ -357,62 +452,66 @@ def extraction_progress_sse(session_id):
     def generate():
         yield _sse_event({"status": "starting"})
 
-        # Poll disk state and yield progress events
         while True:
-            # Get current task statuses from meta.json
             meta = sm.load_meta(session_id)
             tasks = meta.get("extraction_tasks", [])
-
-            # Count completed/total tasks
             completed = sum(1 for t in tasks if t["extraction_status"] == "extracted")
             total = len(tasks)
 
-            # Check if job is still running
             job = _get_active_job(session_id)
 
             if job is None:
-                # No job running
+                # No job running. Derive terminal state from disk:
+                # Case A: .complete exists → extraction finished successfully
                 if _output_complete(session_id):
                     yield _sse_event({"status": "done", "progress": completed, "total": total})
                     return
-                else:
-                    # Job never started or was cancelled
-                    yield _sse_event({"status": "done", "progress": completed, "total": total})
-                    return
-
-            # Job is running, check completion
-            if job.done_event.is_set():
-                # Job finished
-                if job.result == "done":
-                    yield _sse_event({"status": "done", "progress": completed, "total": total})
-                else:
+                # Case B: failed tasks exist → last job failed
+                failed = [t for t in tasks if t["extraction_status"] == "failed"]
+                if failed:
+                    # Report the first non-retryable failure preferentially
+                    terminal_err = next(
+                        (t for t in failed if t["extraction_error_type"] in ("auth", "credits")),
+                        failed[0]
+                    )
                     yield _sse_event({
                         "status": "error",
-                        "error_type": job.error_type,
-                        "message": job.error_message,
+                        "error_type": terminal_err.get("extraction_error_type") or "retryable",
+                        "message": terminal_err.get("extraction_error") or "Tasks failed",
                         "progress": completed,
                         "total": total
                     })
+                    return
+                # Case C: partially done but not complete — needs restart (user action)
+                yield _sse_event({
+                    "status": "paused",
+                    "progress": completed,
+                    "total": total,
+                    "message": "Extraction interrupted. Click Retry to resume."
+                })
                 return
 
-            # Job still running, yield progress
+            # Job running — wait for done or timeout
+            if job.done_event.is_set():
+                yield _task_completion_event(job, completed, total)
+                return
+
             yield _sse_event({
                 "status": "progress",
                 "progress": completed,
                 "total": total,
                 "log": f"Extracted {completed}/{total} regions..."
             })
-
-            # Wait before polling again (or until job completes)
             job.done_event.wait(timeout=0.5)
 
     return Response(generate(), mimetype="text/event-stream")
 ```
 
 **Why this is correct**:
-1. **Client disconnect doesn't cancel**: The generator exits on client disconnect (via `GeneratorExit`), but the job continues in the background
-2. **Reconnect works**: A new SSE request finds the existing job via `_get_active_job()` and subscribes to it
-3. **No race condition**: `done_event.wait(timeout=0.5)` ensures we don't busy-loop and we wake up immediately when job completes
+1. **Client disconnect ≠ cancellation**: `GeneratorExit` exits the generator but the job keeps running
+2. **Reconnect only observes**: No job is created from SSE; POST is the only trigger
+3. **Terminal state survives cleanup**: Even after `_cleanup_completed_jobs()` removes the job, SSE derives the final outcome from `meta.json` failed tasks + `.complete` existence
+4. **Failed tasks drive error reporting**: When no job is running, we check `meta.json` for failed tasks. Auth/credit failures are reported prominently
 
 ### 3.4 Job Execution: Bounded Submission
 
@@ -420,79 +519,108 @@ def extraction_progress_sse(session_id):
 def _execute_extraction(self):
     """Core extraction logic with bounded submission."""
 
-    # 1. Reconcile tasks (see §2.2)
-    on_crop_mutation(self.session_id, self.sm)
+    # 1. Reconcile tasks against current disk state (see §2.2)
+    #    Uses reconcile_tasks, NOT on_crop_mutation — we don't want to
+    #    delete .complete here, we want to *create* it at the end.
+    with self.sm.metadata_lock(self.session_id):
+        meta = self.sm.load_meta(self.session_id)
+        desired = derive_required_tasks(meta)
+        reconcile_tasks(meta, desired)
+        self.sm.save_meta_atomic(self.session_id, meta)
 
-    # 2. Load current state
+    # 2. Determine what needs to run
     meta = self.sm.load_meta(self.session_id)
     tasks = meta.get("extraction_tasks", [])
 
-    # 3. Reconcile filesystem with meta.json (see §12.1)
-    self._reconcile_filesystem_state(meta)
+    # Filter: unless retry_nonretryable flag, skip tasks that failed with auth/credits
+    def _eligible(task):
+        if task["extraction_status"] == "extracted":
+            return False
+        if not self.retry_nonretryable and task["extraction_status"] == "failed" \
+           and task.get("extraction_error_type") in ("auth", "credits"):
+            return False
+        return True
 
-    # 4. Determine what needs to run
-    tasks_to_run = [t for t in tasks if t["extraction_status"] != "extracted"]
+    tasks_to_run = [t for t in tasks if _eligible(t)]
 
     if not tasks_to_run:
-        # All tasks already extracted, just run assembly
+        # All tasks extracted (or only skipped auth/credit failures remain)
+        failed = [t for t in tasks if t["extraction_status"] == "failed"]
+        if failed:
+            terminal = next((t for t in failed if t["extraction_error_type"] in ("auth", "credits")), failed[0])
+            self.result = "error"
+            self.error_message = terminal.get("extraction_error") or "Tasks failed"
+            self.error_type = terminal.get("extraction_error_type") or "retryable"
+            return
+        # Nothing failed — run assembly
         self._run_assembly(meta)
         return
 
-    # 5. Set up bounded submission
+    # 3. Zero-task short-circuit (safety; also guards semaphore deadlock)
     max_workers = min(self.max_workers, len(tasks_to_run))
-    semaphore = threading.Semaphore(max_workers)
-    futures = []
-
-    # 6. Submit tasks with bounded concurrency
-    for task in tasks_to_run:
-        # Check abort/cancel BEFORE acquiring semaphore
-        if self.cancel_event.is_set() or self.abort_flag.is_set():
-            break
-
-        # Acquire semaphore (blocks if max_workers already running)
-        semaphore.acquire()
-
-        # Submit task
-        future = self.executor.submit(self._extract_task, task, semaphore)
-        futures.append(future)
-
-    # 7. Wait for all futures to complete
-    for future in futures:
-        try:
-            future.result()  # Wait for completion and get any exception
-        except Exception as e:
-            # Log error, don't crash the job
-            self.error_message = str(e)
-
-    # 8. Check if we should assemble
-    if self.cancel_event.is_set():
-        self.result = "cancelled"
-        return
-
-    if self.abort_flag.is_set():
+    if max_workers <= 0:
         self.result = "error"
-        return
-
-    # Check for failed tasks
-    meta = self.sm.load_meta(self.session_id)
-    failed = [t for t in meta["extraction_tasks"] if t["extraction_status"] == "failed"]
-    if failed:
-        self.result = "error"
-        self.error_message = f"{len(failed)} task(s) failed"
+        self.error_message = "No eligible tasks"
         self.error_type = "retryable"
         return
 
-    # 9. Run assembly
+    semaphore = threading.Semaphore(max_workers)
+    futures = []
+
+    # 4. Submit tasks with bounded concurrency
+    for task in tasks_to_run:
+        if self.cancel_event.is_set() or self.abort_flag.is_set():
+            break
+        semaphore.acquire()
+        # Post-acquire check: abort/cancel may have been set while waiting
+        if self.cancel_event.is_set() or self.abort_flag.is_set():
+            semaphore.release()
+            break
+        future = self.executor.submit(self._extract_task, task, semaphore)
+        futures.append(future)
+
+    # 5. Drain futures — collect any that raised PipelineCallError
+    for future in futures:
+        try:
+            future.result()
+        except PipelineCallError:
+            pass  # already persisted to meta.json by worker
+        except Exception as e:
+            # Unexpected: log but don't crash the job
+            pass
+
+    # 6. Final decision — NEVER overwrite self.result here; derive from disk state
+    if self.cancel_event.is_set() and not self.abort_flag.is_set():
+        self.result = "cancelled"
+        return
+
+    meta = self.sm.load_meta(self.session_id)
+    failed = [t for t in meta["extraction_tasks"] if t["extraction_status"] == "failed"]
+
+    if failed:
+        # Pick terminal error type
+        auth_fail = [t for t in failed if t["extraction_error_type"] in ("auth", "credits")]
+        if auth_fail:
+            self.result = "error"
+            self.error_message = auth_fail[0]["extraction_error"]
+            self.error_type = auth_fail[0]["extraction_error_type"]
+        else:
+            self.result = "error"
+            self.error_message = f"{len(failed)} task(s) failed"
+            self.error_type = failed[0]["extraction_error_type"] or "retryable"
+        return
+
+    # Assemble and publish
     self._run_assembly(meta)
     self.result = "done"
 ```
 
 **Why this is correct**:
-1. **No submission after abort**: We check `abort_flag` BEFORE acquiring the semaphore, so we stop submitting immediately
-2. **No deadlock on zero tasks**: If `tasks_to_run` is empty, the loop doesn't execute (no semaphore acquire)
-3. **Bounded concurrency**: `Semaphore(max_workers)` ensures at most `max_workers` tasks run concurrently
-4. **Semaphore released**: Each worker calls `semaphore.release()` when done (see §3.5)
-5. **Proper draining**: We call `future.result()` on all submitted futures, waiting for them to complete before proceeding
+1. **Pre+post abort checks**: Prevent submission after abort_flag is set while blocked on semaphore
+2. **Zero-task guard**: No semaphore acquire, no deadlock, clear error message
+3. **Explicit `retry_nonretryable` flag**: Normal start does NOT retry auth/credit failures. Only the explicit Retry action sets the flag.
+4. **Result only set by `_execute_extraction()`**: `run()` never overwrites (see §3.2)
+5. **`reconcile_tasks` not `on_crop_mutation`**: Doesn't delete `.complete`; only syncs task list and validates filesystem state
 
 ### 3.5 Worker Implementation
 
@@ -500,20 +628,23 @@ def _execute_extraction(self):
 def _extract_task(self, task, semaphore):
     """Extract a single task. Called in thread pool worker."""
     try:
-        # Get image path
+        # Determine image source
         meta = self.sm.load_meta(self.session_id)
         page_info = meta["pages"][task["page_idx"]]
 
         if task["kind"] == "page":
-            # Whole-page task
-            image_path = os.path.join(self.page_dir, page_info["path"])
+            # Whole-page task → load the full page image
+            page_path = os.path.join(self.page_dir, page_info["path"])
+            with Image.open(page_path) as img:
+                crop_img = img.copy()
         else:
-            # Crop task
+            # Crop task → load the crop image
             crop_path = os.path.join(self.crop_root, self.session_id, task["crop_filename"])
-            image_path = crop_path
+            with Image.open(crop_path) as img:
+                crop_img = img.copy()
 
-        # Extract HTML (with retry, see §6)
-        html_fragment = extract_crop_as_html(image_path, self.model)
+        # extract_crop_as_html accepts a PIL.Image.Image (not a path)
+        html_fragment = extract_crop_as_html(crop_img, self.model)
 
         # Write fragment atomically
         fragments_dir = self.sm.get_extraction_fragments_dir(self.session_id)
@@ -523,7 +654,7 @@ def _extract_task(self, task, semaphore):
         # Update meta.json
         with self.sm.metadata_lock(self.session_id):
             meta = self.sm.load_meta(self.session_id)
-            for t in meta["extraction_tasks"]:
+            for t in meta.get("extraction_tasks", []):
                 if t["task_id"] == task["task_id"]:
                     t["extraction_status"] = "extracted"
                     t["fragment_path"] = f"extraction_fragments/{task['task_id']}.html"
@@ -532,25 +663,22 @@ def _extract_task(self, task, semaphore):
             self.sm.save_meta_atomic(self.session_id, meta)
 
     except PipelineCallError as e:
-        # Persist failure to meta.json
         with self.sm.metadata_lock(self.session_id):
             meta = self.sm.load_meta(self.session_id)
-            for t in meta["extraction_tasks"]:
+            for t in meta.get("extraction_tasks", []):
                 if t["task_id"] == task["task_id"]:
                     t["extraction_status"] = "failed"
                     t["extraction_error"] = e.message
                     t["extraction_error_type"] = e.error_type
             self.sm.save_meta_atomic(self.session_id, meta)
 
-        # Check if this is a non-retryable error
         if e.error_type in ("auth", "credits"):
             self.abort_flag.set()
 
     except Exception as e:
-        # Unexpected error
         with self.sm.metadata_lock(self.session_id):
             meta = self.sm.load_meta(self.session_id)
-            for t in meta["extraction_tasks"]:
+            for t in meta.get("extraction_tasks", []):
                 if t["task_id"] == task["task_id"]:
                     t["extraction_status"] = "failed"
                     t["extraction_error"] = str(e)
@@ -558,52 +686,50 @@ def _extract_task(self, task, semaphore):
             self.sm.save_meta_atomic(self.session_id, meta)
 
     finally:
-        # Always release semaphore
         semaphore.release()
 ```
 
-**Why this is correct**:
-1. **Error persistence**: Every failure is immediately persisted to meta.json
-2. **Abort on auth/credits**: Non-retryable errors set `abort_flag`, which stops submission (see §3.4 step 6)
-3. **Semaphore release**: Always released in `finally`, preventing deadlock
-4. **Lock safety**: We use `metadata_lock` to protect read-modify-write operations
+**Key fixes**:
+1. Uses `Image.open()` and passes a `PIL.Image.Image` to `extract_crop_as_html` (which already expects an Image, not a path)
+2. `ThreadPoolExecutor` is constructed in `ExtractionJob.__init__` (see §3.2) and shut down in `run()`'s `finally`
+3. Uses top-level `meta["extraction_tasks"]` (consistent with §1.2)
 
 ### 3.6 Job Lifecycle Management
 
 ```python
-# Module-level registry
+import weakref
+
+# Module-level registry with weak references for cleanup
 _active_jobs = {}  # session_id → ExtractionJob
-_jobs_lock = threading.Lock()  # Protects _active_jobs
+_jobs_lock = threading.Lock()
 
 def _get_active_job(session_id):
-    """Get the active job for a session, or None."""
     with _jobs_lock:
         return _active_jobs.get(session_id)
 
-def _start_extraction_job(session_id, sm, crop_root, model, max_workers=4):
-    """Start a new extraction job if none is running."""
+def _start_extraction_job(session_id, sm, crop_root, page_dir, output_dir,
+                           model, max_workers=4, retry_nonretryable=False):
+    """Create and start a new extraction job."""
     with _jobs_lock:
-        # Check if job already exists
         existing = _active_jobs.get(session_id)
         if existing and not existing.done_event.is_set():
-            return existing  # Return existing job
+            raise ExtractionInProgressError("Job already running for session")
 
-        # Create new job
-        job = ExtractionJob(session_id, sm, crop_root, model, max_workers)
+        job = ExtractionJob(
+            session_id=session_id,
+            sm=sm,
+            crop_root=crop_root,
+            page_dir=page_dir,
+            output_dir=output_dir,
+            model=model,
+            max_workers=max_workers,
+            retry_nonretryable=retry_nonretryable,
+        )
         _active_jobs[session_id] = job
 
-        # Start in background thread
-        thread = threading.Thread(target=job.run, daemon=True)
+        thread = threading.Thread(target=job.run, name=f"extract-{session_id[:8]}", daemon=True)
         thread.start()
-
         return job
-
-def _cleanup_completed_jobs():
-    """Remove completed jobs from registry."""
-    with _jobs_lock:
-        completed = [sid for sid, job in _active_jobs.items() if job.done_event.is_set()]
-        for sid in completed:
-            del _active_jobs[sid]
 ```
 
 **SSE route integration**:
@@ -611,27 +737,46 @@ def _cleanup_completed_jobs():
 ```python
 @app.route("/extract-html/<session_id>", methods=["POST"])
 def start_extraction(session_id):
-    """Start extraction job."""
-    # Check prerequisites
+    """Start extraction job. The ONLY way to start/retry extraction."""
+    retry_nonretryable = request.args.get("retry_nonretryable", "false") == "true"
+
     meta = sm.load_meta(session_id)
     if not _all_pages_analyzed(meta):
         return jsonify({"status": "error", "message": "Not all pages analyzed"}), 400
 
-    # Start job (or return existing)
-    job = _start_extraction_job(session_id, sm, crop_root, model)
+    # If any tasks failed with auth/credits and retry flag not set, return error
+    tasks = meta.get("extraction_tasks", [])
+    if not retry_nonretryable:
+        auth_failed = [t for t in tasks
+                       if t["extraction_status"] == "failed"
+                       and t.get("extraction_error_type") in ("auth", "credits")]
+        if auth_failed:
+            return jsonify({
+                "status": "error",
+                "message": "Auth/credit failure. Call with ?retry_nonretryable=true after fixing.",
+                "error_type": auth_failed[0]["extraction_error_type"]
+            }), 400
 
-    return jsonify({"status": "started", "message": "Extraction started"})
+    try:
+        job = _start_extraction_job(session_id, sm, crop_root, page_dir,
+                                     output_dir, model,
+                                     retry_nonretryable=retry_nonretryable)
+    except ExtractionInProgressError:
+        return jsonify({"status": "error", "message": "Extraction already running"}), 409
+
+    return jsonify({"status": "started"})
 
 @app.route("/extract-progress/<session_id>", methods=["GET"])
 def extraction_progress_sse(session_id):
-    """Stream extraction progress (see §3.3)."""
-    # ...
+    """Observe extraction progress. NEVER starts or retries a job."""
+    # (see §3.3)
 ```
 
 **Why this is correct**:
-1. **No duplicate jobs**: `_start_extraction_job()` checks for existing job before creating new one
-2. **Auto-cleanup**: Completed jobs are removed from registry
-3. **Thread-safe**: `_jobs_lock` protects the registry
+1. **POST is the only start mechanism**: SSE observes; POST acts
+2. **Explicit retry flag**: Auth/credit retries require query parameter; normal start fails
+3. **409 when job running**: Prevents duplicate jobs
+4. **Auto-cleanup via `done_event`**: Job remains in registry for SSE observers to read terminal state; cleanup happens periodically via `_cleanup_completed_jobs()`
 
 ---
 
@@ -765,50 +910,69 @@ The `.complete` marker file is the **sole signal** that output is ready. It is w
 
 ```python
 def _run_assembly(self, meta):
-    """Run assembly and write .complete marker."""
+    """Assemble fragments into page files and write .complete marker.
+
+    Sequence:
+    1. Delete any stale .complete marker (prevents serving partial output)
+    2. Read fragment files from disk
+    3. Assemble per-page HTML using write_page_files()
+    4. Write fresh .complete marker atomically
+    """
     output_dir = self.output_dir
+    fragments_dir = self.sm.get_extraction_fragments_dir(self.session_id)
 
-    # Write page files
-    for page_idx, page_data in enumerate(pages_data):
-        page_path = os.path.join(output_dir, f"page-{page_idx}.html")
-        with open(page_path, "w", encoding="utf-8") as f:
-            f.write(page_data["html"])
+    # STEP 1: Remove stale .complete BEFORE any reassembly work
+    session_output_dir = os.path.join(output_dir, self.session_id)
+    _remove_output_marker(self.session_id, output_dir)
 
-    # Write index.html
-    index_path = os.path.join(output_dir, "index.html")
-    with open(index_path, "w", encoding="utf-8") as f:
-        f.write(index_html)
+    # STEP 2: Build per-page HTML from fragments on disk
+    pages_data = []
+    for page_idx, page_info in enumerate(meta.get("pages", [])):
+        # Collect fragment texts for this page, sorted by crop bbox y0
+        page_tasks = [
+            t for t in meta.get("extraction_tasks", [])
+            if t["page_idx"] == page_idx and t["extraction_status"] == "extracted"
+        ]
+        # Preserve fragment sort order (bbox y0 sort already applied via derive_required_tasks)
+        fragments = []
+        for task in page_tasks:
+            frag_path = os.path.join(fragments_dir, os.path.basename(task["fragment_path"]))
+            with open(frag_path, "r", encoding="utf-8") as f:
+                fragments.append(f.read())
+        pages_data.append({"html": "\n".join(fragments)})
 
-    # Write .complete marker atomically
-    marker = {"timestamp": time.time()}
-    marker_path = os.path.join(output_dir, ".complete")
+    # STEP 3: Write page files via existing assembler
+    session_files = meta.get("files", [])
+    title = session_files[0] if session_files else f"Session {self.session_id[:8]}"
+    write_page_files(self.session_id, pages_data, title, output_root=output_dir)
 
-    # Write to temp file first
-    fd, tmp_path = tempfile.mkstemp(dir=output_dir, suffix=".txt")
+    # STEP 4: Write .complete marker atomically
+    _write_complete_marker(session_output_dir)
+```
+
+### 5.3 .complete Marker Helpers
+
+```python
+def _remove_output_marker(session_id, output_dir):
+    """Delete .complete marker if it exists. Safe to call if marker absent."""
+    session_dir = os.path.join(output_dir, session_id)
+    marker_path = os.path.join(session_dir, ".complete")
+    if os.path.exists(marker_path):
+        os.unlink(marker_path)
+
+def _write_complete_marker(session_output_dir):
+    """Write .complete marker atomically via temp file + os.replace."""
+    fd, tmp_path = tempfile.mkstemp(dir=session_output_dir, suffix=".txt")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(marker, f)
-        # Atomic replace
-        os.replace(tmp_path, marker_path)
+            json.dump({"timestamp": time.time()}, f)
+        os.replace(tmp_path, os.path.join(session_output_dir, ".complete"))
     except BaseException:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
         raise
-```
-
-### 5.3 Deleting .complete on Mutation
-
-Every crop mutation must delete `.complete` if it exists:
-
-```python
-def _remove_output_marker(session_id, sm, output_dir):
-    """Delete .complete marker if it exists."""
-    output_session_dir = os.path.join(output_dir, session_id)
-    marker_path = os.path.join(output_session_dir, ".complete")
-    if os.path.exists(marker_path):
-        os.unlink(marker_path)
 ```
 
 ### 5.4 All Output-Serving Routes Must Check .complete
@@ -914,7 +1078,9 @@ class BlankResponseError(RetryableError):
 
 class MalformedOutputError(RetryableError):
     """LLM output could not be parsed into valid JSON/expected structure."""
-    pass
+    def __init__(self, message: str, cause: Exception = None):
+        super().__init__(message, cause)
+        self.error_type = "malformed_output"
 ```
 
 ### 6.2 Error Classification
@@ -1436,7 +1602,7 @@ All state lives on disk and persists across app restarts:
 | `crop_app/app.py` | Use `sm.metadata_lock()` + `sm.save_meta_atomic()` for all meta writes. Add background job start to extraction route. Update `/extract-html/` prerequisite (remove crop check, require analysis done). Add `/analyze/` immediate persistence. Update `/trim/`, `/delete-crop/`, `/commit/` with `on_crop_mutation()` invalidation. Update all output-serving routes to check `.complete`. |
 | `crop_app/session_manager.py` | Add `metadata_lock()`, `save_meta_atomic()`, `get_extraction_fragments_dir()`. Keep existing methods. |
 | `table_extractor/retry.py` | **NEW** — Full exception hierarchy (`PipelineCallError`, `RetryableError`, `NonRetryableError`, `AuthError`, `CreditsExhaustedError`, `BlankResponseError`, `MalformedOutputError`). `retry_with_backoff()` with `max_attempts` semantics, jitter, Retry-After parsing. `classify_api_error()`. `is_blank_fragment()`. |
-| `table_extractor/html_extractor.py` | Add `ExtractionJob` class with background thread execution (`done_event`, `abort_flag`). Rewrite `_execute_extraction()` for bounded submission and task shape reconciliation. Add `derive_required_tasks()` and `on_crop_mutation()`. Wrap `_call()` in retry. Blank response detection + stale cache delete-and-retry. |
+| `table_extractor/html_extractor.py` | Add `ExtractionJob` class with background thread (`done_event`, `abort_flag`, `retry_nonretryable` flag). Add `derive_required_tasks()`, `reconcile_tasks()`, `on_crop_mutation()`. Add `_extraction_in_progress` set + guard. Rewrite `_execute_extraction()` with bounded post-acquire abort checks and `retry_nonretryable` filter. Worker opens image via `Image.open()` and passes `PIL.Image` to `extract_crop_as_html()`. `_run_assembly()` properly deletes `.complete` first, reads fragments from disk, calls `write_page_files()`, writes marker. Blank response detection + stale cache delete-and-retry. |
 | `table_extractor/cache.py` | Export `_cache_key()` and `CACHE_DIR` for stale blank cache deletion from `html_extractor.py`. |
 | `crop_app/crop_manager.py` | Rewrite `_next_crop_index()` to use persistent `next_crop_id` from `meta.json` instead of file-count-based counter. |
 | `table_extractor/html_assembler.py` | `write_page_files()` writes `.complete` marker atomically after all files. |
@@ -1484,24 +1650,33 @@ All state lives on disk and persists across app restarts:
 ### 17.2 Integration Tests
 
 - Mock LLM failure mid-extraction → verify partial task state → resume → verify complete output with `.complete` marker
-- Mock 401 → verify bounded submission stops → abort → persist results → terminal error → fix key → resume → verify success
+- Mock 401 → verify bounded submission stops → abort → persist results → terminal error → fix key → resume with `retry_nonretryable=true` → verify success
 - Mock 429 → verify Retry-After delay → verify eventual success
 - Mock blank response → verify retry → verify success → verify fragment written
 - Pre-populate cache with blank entry → verify cache entry deleted → verify re-call succeeds → verify cache overwritten
 - Crop trim → extract → verify new fragment differs from pre-trim fragment
-- Concurrent SSE requests → verify only one active job → second request polls
+- Concurrent SSE requests → verify only one active job → second request observes
 - Cancel during extraction → verify in-flight workers complete → verify meta.json accurate → resume → complete
 - Crash during `meta.json` write → verify `.tmp` abandoned → verify old `meta.json` intact on next load
-- Crash during `write_page_files` → verify `.complete` not written → verify resume re-runs assembly
+- Crash during `write_page_files` → verify `.complete` not written → verify resume re-runs assembly (existing `.complete` deleted first)
 - Load legacy `meta.json` → verify normalization produces correct default statuses
 - All-Simple session → verify extraction runs without committed crops
 - `extracted` + missing fragment → verify task reset to `pending` on resume
 - Fragment exists + `pending` status → verify task used as-is and marked `extracted`
-- `.complete` exists but tasks incomplete → verify output treated as stale, `.complete` deleted
+- `.complete` exists but tasks incomplete → verify output treated as stale, `.complete` deleted before reassembly
+- **First-crop task-shape transition**: Complex page with no crops → extract (produces `page-0` task) → `/commit` adds first crop → verify `page-0` task removed, crop tasks created with `pending` status
+- **Last-crop task-shape transition**: Complex page with crops → extract (per-crop tasks) → `/delete-crop` removes last crop → verify crop tasks removed, `page-0` task re-created with `pending` status
+- **Non-reused crop IDs**: Commit → delete crop_001 → commit again → verify new crop gets `crop_002` (not `crop_001`). `next_crop_id` increases monotonically.
+- **No automatic auth retry**: Session with auth failures → `POST /extract-html` (no `retry_nonretryable`) → verify 400 response, no job started. Then `POST /extract-html?retry_nonretryable=true` → verify job starts and retries auth failures.
+- **Terminal SSE state after cleanup**: Complete extraction → auth failure tasks exist → call `_cleanup_completed_jobs()` → GET `/extract-progress` → verify "error" status derived from failed tasks even though no job object exists.
+- **Mutation rejection during active job**: Start extraction → during extraction, `POST /trim` → verify 409 "Extraction in progress"
 
 ### 17.3 Edge Cases
 
 - Process death and restart: verify disk-state-only recovery, no stale job in registry
-- Network disconnect and reconnect: verify resume from disk state
+- Network disconnect and reconnect: verify resume from disk state (SSE only observes, POST starts)
 - Same image, different prompt → verify cache miss (prompt in extra_key)
 - `max_attempts=3` semantics → verify exactly 3 total calls, not 3 retries
+- SSE reconnection: verify terminal state derived from disk when no job exists in registry
+- Crop mutation during extraction: verify 409 response from mutation endpoint
+- `next_crop_id` persistence: verify it survives app restart and prevents ID reuse

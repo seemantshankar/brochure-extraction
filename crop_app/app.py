@@ -83,6 +83,7 @@ def create_app():
         _start_extraction_job,
         _get_active_job,
         _output_complete,
+        _remove_output_marker,
         set_output_root,
         derive_required_tasks,
         on_crop_mutation,
@@ -407,9 +408,23 @@ def create_app():
     @app.route("/crops/<session_id>/<crop_filename>", methods=["GET"])
     def serve_crop(session_id, crop_filename):
         """Serve a crop image file."""
+        _sm = app.session_manager
+        if not _sm.session_exists(session_id):
+            return jsonify({"error": "Session not found"}), 404
+        # Verify the filename is recorded in metadata before serving (membership check).
+        meta = _sm.load_meta(session_id)
+        recorded_crops = set()
+        for page in meta.get("pages", []):
+            for crop in page.get("crops", []):
+                recorded_crops.add(crop.get("filename") or crop.get("path"))
+        if crop_filename not in recorded_crops:
+            return jsonify({"error": "Crop not found in metadata"}), 404
+        # Realpath-containment check (path traversal guard).
         cm = CropManager(app.config["CROP_DIR"])
-        session_crop_dir = os.path.join(cm.crop_root, session_id)
-        crop_path = os.path.join(session_crop_dir, crop_filename)
+        session_crop_dir = os.path.realpath(os.path.join(cm.crop_root, session_id))
+        crop_path = os.path.realpath(os.path.join(session_crop_dir, crop_filename))
+        if not crop_path.startswith(session_crop_dir + os.sep):
+            return jsonify({"error": "Access denied"}), 403
         if not os.path.exists(crop_path):
             return jsonify({"error": "Crop not found"}), 404
         return send_file(crop_path, mimetype="image/png")
@@ -527,7 +542,14 @@ def create_app():
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return render_template("error.html", message="Session not found"), 400
-        meta = _sm.load_meta(session_id)
+        # Normalize legacy metadata so that sessions with a valid `classification`
+        # but no `analysis_status` are promoted before the analysis gate below.
+        with _sm.metadata_lock(session_id):
+            meta = _sm.load_meta(session_id)
+            fragments_dir = _sm.get_extraction_fragments_dir(session_id)
+            crop_dir = os.path.join(app.config["CROP_DIR"], session_id)
+            meta = normalize_legacy_meta(meta, fragments_dir, crop_dir)
+            _sm.save_meta_atomic(session_id, meta)
         for page in meta.get("pages", []):
             if page.get("draft") and len(page["draft"]) > 0:
                 return render_template("error.html", message="You have uncommitted changes. Please commit them before extracting HTML."), 400
@@ -564,6 +586,12 @@ def create_app():
                         "message": "Auth/credit failure. Call with ?retry_nonretryable=true after fixing.",
                         "error_type": auth_failed[0]["extraction_error_type"],
                     }), 400
+            # Remove stale .complete marker synchronously, while still holding the
+            # metadata lock, so any viewer arriving before the background thread runs
+            # cannot be served stale output.
+            incomplete_tasks = [t for t in tasks if t.get("extraction_status") != "extracted"]
+            if incomplete_tasks:
+                _remove_output_marker(session_id, app.config["EXTRACTED_DIR"])
             try:
                 _start_extraction_job(
                     session_id, _sm, app.config["CROP_DIR"], _sm.get_page_dir(session_id),

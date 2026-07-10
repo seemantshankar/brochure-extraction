@@ -1,9 +1,17 @@
 # crop_app/llm.py
+from __future__ import annotations
 import os
 import json
 import base64
+import io
 from openai import OpenAI
 from PIL import Image
+from table_extractor.cache import cached_call
+from table_extractor.retry import (
+    retry_with_backoff,
+    MalformedOutputError,
+    PipelineCallError,
+)
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1"
 
@@ -68,49 +76,52 @@ Do NOT include any other text, explanation, or markdown formatting outside the J
 def analyze_page(image_path: str) -> dict:
     """Send a page image to the LLM and return classification.
 
-    Returns: {"classification": "Simple" | "Complex", "error": str|None}
+    Returns: {"classification": "Simple"|"Complex"|None, "error": str|None}
+    On API failure returns classification None (never "Complex").
     """
-    try:
-        img = Image.open(image_path)
-        if img.mode != "RGB":
-            img = img.convert("RGB")
+    img = Image.open(image_path)
+    if img.mode != "RGB":
+        img = img.convert("RGB")
 
-        # Save as temp JPEG for embedding (smaller than PNG base64)
-        import io
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=85)
-        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    image_bytes = buf.getvalue()
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
 
+    def _call_api():
+        """Inner API call, wrapped in retry_with_backoff."""
         response = _get_client().chat.completions.create(
             model=MODEL_ID,
             messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": ANALYSIS_PROMPT},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{b64}"
-                            },
-                        },
-                    ],
-                }
+                {"role": "user", "content": [
+                    {"type": "text", "text": ANALYSIS_PROMPT},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                ]}
             ],
             reasoning_effort="minimal",
         )
-
         raw_content = response.choices[0].message.content or ""
-        return _parse_response(raw_content)
+        return _parse_response_strict(raw_content)
 
+    try:
+        result = cached_call(
+            image_bytes=image_bytes,
+            stage="analyze",
+            model=MODEL_ID,
+            fn=lambda: [retry_with_backoff(_call_api)],
+            force=False,
+            extra_key=ANALYSIS_PROMPT,
+        )
+        return result[0]
+    except PipelineCallError as e:
+        return {"classification": None, "error": e.message}
     except Exception as e:
-        return {"classification": "Complex", "error": str(e)}
+        return {"classification": None, "error": str(e)}
 
 
-def _parse_response(raw: str) -> dict:
-    """Parse LLM JSON response, stripping markdown fences if present."""
+def _parse_response_strict(raw: str) -> dict:
+    """Parse LLM JSON response. Raises MalformedOutputError on failure."""
     text = raw.strip()
-
     if text.startswith("```"):
         lines = text.split("\n")
         start = 1
@@ -119,18 +130,18 @@ def _parse_response(raw: str) -> dict:
 
     try:
         data = json.loads(text)
-        if isinstance(data, dict):
-            classification = data.get("classification")
-            if classification not in ("Simple", "Complex"):
-                return {
-                    "classification": "Complex",
-                    "error": f"Invalid or missing classification field: {raw[:200]}",
-                }
-            return {"classification": classification, "error": None}
-    except (json.JSONDecodeError, AttributeError):
-        pass
+    except json.JSONDecodeError:
+        raise MalformedOutputError(f"Failed to parse JSON: {raw[:200]}")
 
-    return {"classification": "Complex", "error": f"Failed to parse: {raw[:200]}"}
+    if not isinstance(data, dict):
+        raise MalformedOutputError(f"Expected JSON object: {raw[:200]}")
+
+    classification = data.get("classification")
+    if classification not in ("Simple", "Complex"):
+        raise MalformedOutputError(f"Invalid classification value: {raw[:200]}")
+
+    return {"classification": classification, "error": None}
+
 
 
 def analyze_pages(page_paths: list[str]) -> list[dict]:

@@ -33,7 +33,13 @@ class RetryableError(PipelineCallError):
 
 class NonRetryableError(PipelineCallError):
     """Permanent error; caller must not retry."""
-    pass
+
+    def __init__(self, error_type: str, message: str = None, cause: Exception = None):
+        if message is None:
+            super().__init__("non_retryable", error_type, cause)
+        else:
+            super().__init__(error_type, message, cause)
+
 
 
 class AuthError(NonRetryableError):

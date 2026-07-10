@@ -555,11 +555,11 @@ def _execute_extraction(self):
             self.result = "error"
             self.error_message = terminal.get("extraction_error") or "Tasks failed"
             self.error_type = terminal.get("extraction_error_type") or "retryable"
-             return
-         # Nothing failed — run assembly
-         self._run_assembly(meta)
-         self.result = "done"
-         return
+            return
+        # Nothing failed — run assembly
+        self._run_assembly(meta)
+        self.result = "done"
+        return
 
     # 3. Zero-task short-circuit (safety; also guards semaphore deadlock)
     max_workers = min(self.max_workers, len(tasks_to_run))
@@ -1570,7 +1570,11 @@ The progress counter reflects **total** completed work (pre-existing + just-comp
 
 Note: there is no per-page `extraction_status`. Page-level completion is derived from the top-level tasks whose `page_idx` matches.
 
-No migration script is needed. The normalization logic in §14 runs on first access by `POST /extract-html` or SSE reconnection.
+No migration script is needed. The normalization logic in §14 runs on first access by any of:
+- `POST /extract-html` (start/retry extraction)
+- Crop mutation routes (`POST /commit`, `POST /trim`, `POST /delete-crop`)
+
+SSE (`GET /extract-progress`) observes current state but does not normalize. If the session has missing fields, SSE derives a degraded view (e.g., "idle" or "paused") and prompts the user to trigger normalization via one of the above routes.
 
 ### 14.2 No Schema Migration
 

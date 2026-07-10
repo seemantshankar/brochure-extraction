@@ -279,6 +279,11 @@ class ExtractionJob:
             desired = derive_required_tasks(meta)
             reconcile_tasks(meta, desired, self.sm.get_extraction_fragments_dir(self.session_id))
             self.sm.save_meta_atomic(self.session_id, meta)
+            
+            # If any task is not yet extracted, remove stale complete marker.
+            tasks = meta.get("extraction_tasks", [])
+            if any(t.get("extraction_status") != "extracted" for t in tasks):
+                _remove_output_marker(self.session_id, self.output_dir)
 
         meta = self.sm.load_meta(self.session_id)
         tasks = meta.get("extraction_tasks", [])

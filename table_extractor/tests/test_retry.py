@@ -92,3 +92,32 @@ def test_malformed_output_error_type():
     e = MalformedOutputError("bad json")
     assert e.error_type == "malformed_output"
     assert isinstance(e, RetryableError)
+
+
+def test_retry_with_backoff_respects_retry_after_on_generic_error():
+    calls = {"n": 0, "delays": []}
+
+    def sleep_spy(sec):
+        calls["delays"].append(sec)
+
+    # Use a custom APIStatusError mock that classify_api_error classifies as RetryableError with retry_after
+    from openai import APIStatusError
+    resp = MagicMock()
+    resp.status_code = 429
+    resp.headers = {"retry-after": "5"}
+    api_err = APIStatusError("too many requests", response=resp, body=None)
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise api_err
+        return "success"
+
+    import unittest.mock as mock
+    with mock.patch("time.sleep", sleep_spy):
+        res = retry_with_backoff(flaky, max_attempts=3, base_delay=0.001)
+
+    assert res == "success"
+    assert calls["n"] == 2
+    assert calls["delays"] == [5.0]
+

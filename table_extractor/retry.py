@@ -69,7 +69,7 @@ def _parse_retry_after(response) -> float | None:
     """Parse Retry-After header (seconds) from an HTTP response, capped at max_delay."""
     if response is None:
         return None
-    val = response.headers.get("Retry-After")
+    val = response.headers.get("Retry-After") or response.headers.get("retry-after")
     if val is None:
         return None
     try:
@@ -139,8 +139,11 @@ def retry_with_backoff(
                 last_exc = classified
                 if attempt == max_attempts - 1:
                     raise classified
-                delay = min(base_delay * (2 ** attempt), max_delay)
-                delay += random.random() * jitter
+                if classified.retry_after is not None:
+                    delay = min(classified.retry_after, max_delay)
+                else:
+                    delay = min(base_delay * (2 ** attempt), max_delay)
+                    delay += random.random() * jitter
                 time.sleep(delay)
             else:
                 raise classified

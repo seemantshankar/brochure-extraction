@@ -116,3 +116,64 @@ def test_terminal_sse_after_cleanup(app_client):
     resp = client.get(f"/extract-progress/{sid}")
     assert resp.status_code == 200
     assert "done" in resp.data.decode()
+
+
+def test_delete_session_rejected_during_active_job(app_client):
+    client, sid, sm = app_client
+    _mark_analyzed(sm, sid)
+    
+    # Run a slow job
+    def slow(img, model):
+        time.sleep(1.0)
+        return "<p>x</p>"
+        
+    with patch("table_extractor.html_extractor.extract_crop_as_html", slow):
+        resp = client.post(f"/extract-html/{sid}")
+        assert resp.status_code == 200
+        
+        # Verify that DELETE /sessions/<sid> returns 409 Conflict
+        del_resp = client.delete(f"/sessions/{sid}")
+        assert del_resp.status_code == 409
+        assert b"Cannot delete session with active extraction" in del_resp.data
+
+    job = _get_active_job(sid)
+    if job:
+        job.done_event.wait(timeout=10)
+
+
+def test_starting_extraction_deletes_stale_complete_marker(app_client):
+    client, sid, sm = app_client
+    _mark_analyzed(sm, sid)
+    
+    # Pre-write a stale complete marker
+    app = client.application
+    session_out_dir = os.path.join(app.config["EXTRACTED_DIR"], sid)
+    os.makedirs(session_out_dir, exist_ok=True)
+    complete_marker = os.path.join(session_out_dir, ".complete")
+    with open(complete_marker, "w") as f:
+        f.write('{"timestamp": 1234.5}')
+    assert os.path.exists(complete_marker)
+    
+    # Start extraction: should detect that there are pending tasks (since page-0 needs extraction)
+    # and immediately remove the complete marker under lock. Use a slow mock to keep the job active.
+    def slow_extract(*args, **kwargs):
+        time.sleep(0.5)
+        return "<p>x</p>"
+
+    with patch("table_extractor.html_extractor.extract_crop_as_html", slow_extract):
+        resp = client.post(f"/extract-html/{sid}")
+        assert resp.status_code == 200
+        
+        # Wait a tiny bit for the background thread to run its setup and delete the marker
+        time.sleep(0.1)
+        
+        # Check that complete marker is gone immediately
+        assert not os.path.exists(complete_marker)
+        
+        job = _get_active_job(sid)
+        if job:
+            job.done_event.wait(timeout=10)
+            
+    # And after successful job completion, it writes a new complete marker
+    assert os.path.exists(complete_marker)
+

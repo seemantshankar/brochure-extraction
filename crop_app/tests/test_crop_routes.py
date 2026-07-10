@@ -190,3 +190,61 @@ def test_delete_crop_removes_meta_and_file(client_with_session):
     meta = client.application.session_manager.load_meta(sid)
     assert len(meta["pages"][0]["crops"]) == 1
     assert meta["pages"][0]["crops"][0]["filename"] != crop_filename
+
+
+def test_trim_rejects_unrecorded_crop_or_traversal(client_with_session):
+    client, sid = client_with_session
+    
+    # 1. Unrecorded crop
+    resp = client.post(
+        f"/trim/{sid}/unrecorded_crop.png",
+        data=json.dumps({"bbox": [0, 0, 1, 1]}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 404
+    
+    # 2. Path traversal attempt
+    resp = client.post(
+        f"/trim/{sid}/../../stray.png",
+        data=json.dumps({"bbox": [0, 0, 1, 1]}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 404  # Rejects because it's not a recorded crop first
+
+
+def test_delete_crop_rejects_unrecorded_crop_or_traversal(client_with_session):
+    client, sid = client_with_session
+    
+    # 1. Unrecorded crop
+    resp = client.post(
+        f"/delete-crop/{sid}",
+        data=json.dumps({"page_index": 0, "filename": "unrecorded_crop.png"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 404
+    
+    # 2. Path traversal attempt
+    resp = client.post(
+        f"/delete-crop/{sid}",
+        data=json.dumps({"page_index": 0, "filename": "../../stray.png"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 404  # Rejects because it's not in page crops
+
+
+def test_delete_crop_realpath_containment_checks(client_with_session):
+    client, sid = client_with_session
+    meta = client.application.session_manager.load_meta(sid)
+    meta["pages"][0]["crops"] = [{"filename": "../../passwd", "bbox": [0, 0, 1, 1]}]
+    client.application.session_manager.save_meta_atomic(sid, meta)
+    
+    # Delete crop should return 403 Forbidden because path points outside crop dir
+    resp2 = client.post(
+        f"/delete-crop/{sid}",
+        data=json.dumps({"page_index": 0, "filename": "../../passwd"}),
+        content_type="application/json",
+    )
+    assert resp2.status_code == 403
+
+
+

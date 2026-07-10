@@ -211,40 +211,40 @@ def create_app():
             page_path = os.path.join(page_dir, page_info["path"])
             pending.append((page_idx, page_path, page_info))
 
-        # 2. Call the LLM WITHOUT holding the lock (slow I/O outside critical section)
-        results = []
+        # 2. Call the LLM WITHOUT holding the lock (slow I/O outside critical section) and persist immediately
         for page_idx, page_path, page_snapshot in pending:
             if not os.path.exists(page_path):
-                results.append((page_idx, {"classification": None, "error": "Page file missing"}))
-                continue
-            result = analyze_page(page_path)
-            if result.get("classification") == "Complex" and \
-               page_snapshot.get("pdf_path") and page_snapshot.get("pdf_page") is not None:
-                try:
-                    pdf_full_path = os.path.join(session_dir, page_snapshot["pdf_path"])
-                    upgrade_page_to_hires(pdf_full_path, page_path, page_snapshot["pdf_page"])
-                except Exception as e:
-                    result = dict(result)
-                    result["upgrade_error"] = str(e)
-            results.append((page_idx, result))
+                result = {"classification": None, "error": "Page file missing"}
+            else:
+                result = analyze_page(page_path)
+                if result.get("classification") == "Complex" and \
+                   page_snapshot.get("pdf_path") and page_snapshot.get("pdf_page") is not None:
+                    try:
+                        pdf_full_path = os.path.join(session_dir, page_snapshot["pdf_path"])
+                        upgrade_page_to_hires(pdf_full_path, page_path, page_snapshot["pdf_page"])
+                    except Exception as e:
+                        result = dict(result)
+                        result["upgrade_error"] = str(e)
 
-        # 3. Acquire lock → reload current meta → apply this page's result by index → atomic save
+            # Persist immediately under lock
+            with _sm.metadata_lock(session_id):
+                meta = _sm.load_meta(session_id)
+                if page_idx < len(meta["pages"]):
+                    page_info = meta["pages"][page_idx]
+                    if result.get("classification") is None:
+                        page_info["analysis_status"] = "error"
+                        page_info["analysis_error"] = result.get("error")
+                    else:
+                        page_info["analysis_status"] = "done"
+                        page_info["classification"] = result["classification"]
+                        page_info["analysis_error"] = None
+                        if result.get("upgrade_error"):
+                            page_info["upgrade_error"] = result["upgrade_error"]
+                    _sm.save_meta_atomic(session_id, meta)
+
+        # 3. Reload current meta to return the fully updated copy
         with _sm.metadata_lock(session_id):
             meta = _sm.load_meta(session_id)
-            for page_idx, result in results:
-                if page_idx >= len(meta["pages"]):
-                    continue
-                page_info = meta["pages"][page_idx]
-                if result.get("classification") is None:
-                    page_info["analysis_status"] = "error"
-                    page_info["analysis_error"] = result.get("error")
-                else:
-                    page_info["analysis_status"] = "done"
-                    page_info["classification"] = result["classification"]
-                    page_info["analysis_error"] = None
-                    if result.get("upgrade_error"):
-                        page_info["upgrade_error"] = result["upgrade_error"]
-            _sm.save_meta_atomic(session_id, meta)
         return jsonify(meta)
 
     @app.route("/session/<session_id>", methods=["GET"])
@@ -345,9 +345,19 @@ def create_app():
                         os.unlink(frag_path)
                     task["fragment_path"] = None
                     break
+            recorded_crops = set()
+            for page in meta.get("pages", []):
+                for crop in page.get("crops", []):
+                    recorded_crops.add(crop.get("filename") or crop.get("path"))
+            if crop_filename not in recorded_crops:
+                return jsonify({"error": "Crop not found in metadata"}), 404
+
             cm = CropManager(app.config["CROP_DIR"])
-            session_crop_dir = os.path.join(cm.crop_root, session_id)
-            crop_path = os.path.join(session_crop_dir, crop_filename)
+            session_crop_dir = os.path.realpath(os.path.join(cm.crop_root, session_id))
+            crop_path = os.path.realpath(os.path.join(session_crop_dir, crop_filename))
+            if not crop_path.startswith(session_crop_dir + os.sep):
+                return jsonify({"error": "Access denied"}), 403
+
             if not os.path.exists(crop_path):
                 return jsonify({"error": "Crop not found"}), 404
             cm.trim_crop(crop_path, data["bbox"])
@@ -375,8 +385,16 @@ def create_app():
                 return jsonify({"error": "Invalid page_index"}), 400
             page_info = meta["pages"][page_index]
             filename = data["filename"]
+            page_crops = {c.get("filename") or c.get("path") for c in page_info.get("crops", [])}
+            if filename not in page_crops:
+                return jsonify({"error": "Crop not found in page metadata"}), 404
+
             cm = CropManager(app.config["CROP_DIR"])
-            crop_path = os.path.join(cm.crop_root, session_id, filename)
+            session_crop_dir = os.path.realpath(os.path.join(cm.crop_root, session_id))
+            crop_path = os.path.realpath(os.path.join(session_crop_dir, filename))
+            if not crop_path.startswith(session_crop_dir + os.sep):
+                return jsonify({"error": "Access denied"}), 403
+
             if os.path.exists(crop_path):
                 os.remove(crop_path)
             before = len(page_info.get("crops", []))
@@ -451,14 +469,15 @@ def create_app():
         if not data or "page_index" not in data or "boxes" not in data:
             return jsonify({"error": "Missing page_index or boxes"}), 400
 
-        meta = _sm.load_meta(session_id)
         page_index = data["page_index"]
-        if page_index >= len(meta["pages"]):
-            return jsonify({"error": "Invalid page_index"}), 400
+        with _sm.metadata_lock(session_id):
+            meta = _sm.load_meta(session_id)
+            if page_index >= len(meta["pages"]):
+                return jsonify({"error": "Invalid page_index"}), 400
 
-        page_info = meta["pages"][page_index]
-        page_info["draft"] = data["boxes"]
-        _sm.save_meta(session_id, meta)
+            page_info = meta["pages"][page_index]
+            page_info["draft"] = data["boxes"]
+            _sm.save_meta_atomic(session_id, meta)
         return jsonify({"ok": True})
 
     @app.route("/clear-draft/<session_id>", methods=["POST"])
@@ -472,15 +491,16 @@ def create_app():
         if not data or "page_index" not in data:
             return jsonify({"error": "Missing page_index"}), 400
 
-        meta = _sm.load_meta(session_id)
         page_index = data["page_index"]
-        if page_index >= len(meta["pages"]):
-            return jsonify({"error": "Invalid page_index"}), 400
+        with _sm.metadata_lock(session_id):
+            meta = _sm.load_meta(session_id)
+            if page_index >= len(meta["pages"]):
+                return jsonify({"error": "Invalid page_index"}), 400
 
-        page_info = meta["pages"][page_index]
-        if "draft" in page_info:
-            del page_info["draft"]
-        _sm.save_meta(session_id, meta)
+            page_info = meta["pages"][page_index]
+            if "draft" in page_info:
+                del page_info["draft"]
+            _sm.save_meta_atomic(session_id, meta)
         return jsonify({"ok": True})
 
     @app.route("/sessions/<session_id>", methods=["DELETE"])
@@ -490,11 +510,15 @@ def create_app():
         if not _sm.session_exists(session_id):
             return jsonify({"error": "Session not found"}), 404
 
-        session_dir = _sm.get_session_dir(session_id)
-        crop_dir = _sm.get_crop_dir(session_id)
+        with _sm.metadata_lock(session_id):
+            if _is_extraction_in_progress(session_id):
+                return jsonify({"status": "error", "message": "Cannot delete session with active extraction"}), 409
 
-        shutil.rmtree(session_dir, ignore_errors=True)
-        shutil.rmtree(crop_dir, ignore_errors=True)
+            session_dir = _sm.get_session_dir(session_id)
+            crop_dir = _sm.get_crop_dir(session_id)
+
+            shutil.rmtree(session_dir, ignore_errors=True)
+            shutil.rmtree(crop_dir, ignore_errors=True)
 
         return jsonify({"ok": True})
 

@@ -597,6 +597,56 @@ def reconcile_tasks(meta: dict, desired_tasks: list, fragments_dir: str) -> None
 
     meta["extraction_tasks"] = final
 
+def normalize_legacy_meta(meta: dict, fragments_dir: str = None, crop_dir: str = None) -> dict:
+    """Return a normalized copy of meta with additive fields defaulted.
+
+    Handles legacy sessions lacking analysis_status / extraction_tasks / next_crop_id.
+    `next_crop_id` defaults to max(existing numeric crop IDs in crop_dir) + 1 (never 0
+    when crops already exist), so legacy crop filenames are never reused.
+    """
+    meta = dict(meta)  # shallow copy; we will replace nested lists with new lists
+    pages = []
+    for page in meta.get("pages", []):
+        page = dict(page)
+        if "analysis_status" not in page:
+            if page.get("classification") in ("Simple", "Complex"):
+                page["analysis_status"] = "done"
+            elif page.get("complex"):
+                page["analysis_status"] = "done"
+                page["classification"] = "Complex"
+            else:
+                page["analysis_status"] = "pending"
+        pages.append(page)
+    meta["pages"] = pages
+
+    if "extraction_tasks" not in meta:
+        desired = derive_required_tasks(meta)
+        tasks = []
+        for d in desired:
+            frag_name = f"{d['task_id']}.html"
+            has_frag = bool(fragments_dir and os.path.exists(os.path.join(fragments_dir, frag_name)))
+            if has_frag:
+                tasks.append({**d, "extraction_status": "extracted",
+                              "fragment_path": f"extraction_fragments/{frag_name}",
+                              "extraction_error": None, "extraction_error_type": None})
+            else:
+                tasks.append({**d, "extraction_status": "pending",
+                              "fragment_path": None, "extraction_error": None,
+                              "extraction_error_type": None})
+        meta["extraction_tasks"] = tasks
+
+    if "next_crop_id" not in meta:
+        max_id = -1
+        if crop_dir and os.path.isdir(crop_dir):
+            for fname in os.listdir(crop_dir):
+                if fname.startswith("crop_") and fname.endswith(".png"):
+                    digits = fname[len("crop_"):-len(".png")]
+                    if digits.isdigit():
+                        max_id = max(max_id, int(digits))
+        meta["next_crop_id"] = max_id + 1
+
+    return meta
+
 
 def on_crop_mutation(meta: dict, sm, session_id: str, output_dir: str) -> None:
     """Invalidate stale fragments/tasks after a crop mutation. In-place on meta."""

@@ -89,6 +89,7 @@ def create_app():
         _is_extraction_in_progress,
         reconcile_tasks,
         ExtractionInProgressError,
+        normalize_legacy_meta,
     )
     set_output_root(app.config["EXTRACTED_DIR"])
 
@@ -280,6 +281,9 @@ def create_app():
             if _is_extraction_in_progress(session_id):
                 return jsonify({"status": "error", "message": "Extraction in progress"}), 409
             meta = _sm.load_meta(session_id)
+            fragments_dir = _sm.get_extraction_fragments_dir(session_id)
+            crop_dir = os.path.join(app.config["CROP_DIR"], session_id)
+            meta = normalize_legacy_meta(meta, fragments_dir, crop_dir)
             page_index = data["page_index"]
             if page_index >= len(meta["pages"]):
                 return jsonify({"error": "Invalid page_index"}), 400
@@ -328,6 +332,8 @@ def create_app():
                 return jsonify({"status": "error", "message": "Extraction in progress"}), 409
             meta = _sm.load_meta(session_id)
             fragments_dir = _sm.get_extraction_fragments_dir(session_id)
+            crop_dir = os.path.join(app.config["CROP_DIR"], session_id)
+            meta = normalize_legacy_meta(meta, fragments_dir, crop_dir)
             task_id = os.path.splitext(crop_filename)[0]
             for task in meta.get("extraction_tasks", []):
                 if task["task_id"] == task_id:
@@ -361,6 +367,9 @@ def create_app():
             if _is_extraction_in_progress(session_id):
                 return jsonify({"status": "error", "message": "Extraction in progress"}), 409
             meta = _sm.load_meta(session_id)
+            fragments_dir = _sm.get_extraction_fragments_dir(session_id)
+            crop_dir = os.path.join(app.config["CROP_DIR"], session_id)
+            meta = normalize_legacy_meta(meta, fragments_dir, crop_dir)
             page_index = data["page_index"]
             if page_index >= len(meta["pages"]):
                 return jsonify({"error": "Invalid page_index"}), 400
@@ -511,28 +520,34 @@ def create_app():
         if not _sm.session_exists(session_id):
             return jsonify({"error": "Session not found"}), 404
         retry_nonretryable = request.args.get("retry_nonretryable", "false") == "true"
-        meta = _sm.load_meta(session_id)
-        if not all(p.get("analysis_status") == "done" for p in meta.get("pages", [])):
-            return jsonify({"status": "error", "message": "Not all pages analyzed"}), 400
-        tasks = meta.get("extraction_tasks", [])
-        if not retry_nonretryable:
-            auth_failed = [t for t in tasks
-                           if t["extraction_status"] == "failed"
-                           and t.get("extraction_error_type") in ("auth", "credits")]
-            if auth_failed:
-                return jsonify({
-                    "status": "error",
-                    "message": "Auth/credit failure. Call with ?retry_nonretryable=true after fixing.",
-                    "error_type": auth_failed[0]["extraction_error_type"],
-                }), 400
-        try:
-            _start_extraction_job(
-                session_id, _sm, app.config["CROP_DIR"], _sm.get_page_dir(session_id),
-                app.config["EXTRACTED_DIR"], os.environ["DATA_EXTRACTION_MODEL_ID"],
-                retry_nonretryable=retry_nonretryable,
-            )
-        except ExtractionInProgressError:
-            return jsonify({"status": "error", "message": "Extraction already running"}), 409
+        with _sm.metadata_lock(session_id):
+            meta = _sm.load_meta(session_id)
+            fragments_dir = _sm.get_extraction_fragments_dir(session_id)
+            crop_dir = os.path.join(app.config["CROP_DIR"], session_id)
+            meta = normalize_legacy_meta(meta, fragments_dir, crop_dir)
+            _sm.save_meta_atomic(session_id, meta)
+
+            if not all(p.get("analysis_status") == "done" for p in meta.get("pages", [])):
+                return jsonify({"status": "error", "message": "Not all pages analyzed"}), 400
+            tasks = meta.get("extraction_tasks", [])
+            if not retry_nonretryable:
+                auth_failed = [t for t in tasks
+                               if t["extraction_status"] == "failed"
+                               and t.get("extraction_error_type") in ("auth", "credits")]
+                if auth_failed:
+                    return jsonify({
+                        "status": "error",
+                        "message": "Auth/credit failure. Call with ?retry_nonretryable=true after fixing.",
+                        "error_type": auth_failed[0]["extraction_error_type"],
+                    }), 400
+            try:
+                _start_extraction_job(
+                    session_id, _sm, app.config["CROP_DIR"], _sm.get_page_dir(session_id),
+                    app.config["EXTRACTED_DIR"], os.environ["DATA_EXTRACTION_MODEL_ID"],
+                    retry_nonretryable=retry_nonretryable,
+                )
+            except ExtractionInProgressError:
+                return jsonify({"status": "error", "message": "Extraction already running"}), 409
         return jsonify({"status": "started"})
 
     @app.route("/extract-progress/<session_id>", methods=["GET"])

@@ -69,3 +69,56 @@ class TestCleanUpHtmlFragment:
     def test_empty_string_returns_empty(self):
         """Empty input returns empty output."""
         assert clean_up_html_fragment("") == ""
+
+
+class TestFDCleanupAndJobCleanup:
+    """Tests for file descriptor cleanup on atomic writer errors and job start registry cleanup."""
+
+    def test_write_complete_marker_fd_cleanup_on_error(self, tmp_path):
+        import table_extractor.html_extractor as he
+        from unittest.mock import patch
+
+        with patch("os.fdopen", side_effect=RuntimeError("fdopen failed")), \
+             patch("os.close") as mock_close:
+            try:
+                he._write_complete_marker(str(tmp_path))
+            except RuntimeError:
+                pass
+            mock_close.assert_called_once()
+
+    def test_write_file_atomic_fd_cleanup_on_error(self, tmp_path):
+        import table_extractor.html_extractor as he
+        from unittest.mock import patch
+
+        target_file = tmp_path / "test.html"
+        with patch("os.fdopen", side_effect=RuntimeError("fdopen failed")), \
+             patch("os.close") as mock_close:
+            try:
+                he._write_file_atomic(str(target_file), "content")
+            except RuntimeError:
+                pass
+            mock_close.assert_called_once()
+
+    def test_start_extraction_job_cleans_up_completed_jobs(self):
+        import table_extractor.html_extractor as he
+        from unittest.mock import patch, MagicMock
+
+        with patch("table_extractor.html_extractor._cleanup_completed_jobs") as mock_cleanup, \
+             patch("table_extractor.html_extractor.ExtractionJob") as mock_job_class, \
+             patch("table_extractor.html_extractor._set_extraction_in_progress"), \
+             patch("threading.Thread") as mock_thread:
+
+            mock_job = MagicMock()
+            mock_job_class.return_value = mock_job
+
+            he._start_extraction_job(
+                session_id="test_session",
+                sm=MagicMock(),
+                crop_root="crop_root",
+                page_dir="page_dir",
+                output_dir="output_dir",
+                model="model"
+            )
+
+            mock_cleanup.assert_called_once()
+

@@ -185,6 +185,10 @@ def _write_complete_marker(session_output_dir: str) -> None:
         os.replace(tmp_path, os.path.join(session_output_dir, ".complete"))
     except BaseException:
         try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
             os.unlink(tmp_path)
         except OSError:
             pass
@@ -411,6 +415,10 @@ def _write_file_atomic(path: str, content: str) -> None:
         os.replace(tmp_path, path)
     except BaseException:
         try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
             os.unlink(tmp_path)
         except OSError:
             pass
@@ -430,6 +438,7 @@ def _get_active_job(session_id):
 def _start_extraction_job(session_id, sm, crop_root, page_dir, output_dir,
                           model, max_workers=4, retry_nonretryable=False):
     """Create and start a new extraction job. Atomically registers in-progress state."""
+    _cleanup_completed_jobs()
     with _jobs_lock:
         existing = _active_jobs.get(session_id)
         if existing and not existing.done_event.is_set():

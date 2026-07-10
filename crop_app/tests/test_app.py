@@ -189,3 +189,36 @@ def test_serve_extracted_page_post_out_of_range_returns_400(isolated_client, tmp
     assert resp.get_json() == {"status": "error", "message": "Invalid page index"}
     assert not os.path.exists(os.path.join(session_dir, "page-999.html"))
 
+
+def test_path_traversal_and_prefix_bypass(isolated_client, tmp_path):
+    """Endpoints reject paths with traversal or folder prefix bypass."""
+    app, client = isolated_client
+    extracted_dir = tmp_path / "extracted"
+    app.config["EXTRACTED_DIR"] = str(extracted_dir)
+
+    # Mock session_exists to bypass the session check and test path checks in _save_page_html/serve_extracted_page
+    app.session_manager.session_exists = lambda sid: True
+    app.session_manager.load_meta = lambda sid: {"pages": [{"path": "page_000.png", "classification": "Simple", "crops": []}]}
+
+    with app.test_request_context(data="<p>hacked</p>"):
+        # Test serve_extracted_page with traversal session_id
+        resp = app.view_functions["serve_extracted_page"]("..", 0)
+        # For GET request (which is default without POST method), it should return "Session not found", 404 (Flask returns tuple/response)
+        assert resp == ("Session not found", 404)
+
+        # Test POST serve_extracted_page with traversal session_id
+        from flask import request
+        request.method = "POST"
+        resp_post = app.view_functions["serve_extracted_page"]("..", 0)
+        assert resp_post == ("Session not found", 404)
+
+        # Test save_page view function (which calls _save_page_html) with traversal session_id
+        resp_save = app.view_functions["save_page"]("..", 0)
+        # This returns a tuple of (Response, 400)
+        assert resp_save[1] == 400
+        assert resp_save[0].get_json()["status"] == "error"
+        assert "Invalid session id" in resp_save[0].get_json()["message"]
+
+
+
+

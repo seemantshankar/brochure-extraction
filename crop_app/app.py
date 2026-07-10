@@ -619,13 +619,13 @@ def create_app():
         out_dir = app.config["EXTRACTED_DIR"]
         base_dir = os.path.realpath(out_dir)
         session_dir = os.path.realpath(os.path.join(base_dir, session_id))
-        if not session_dir.startswith(base_dir):
+        if not session_dir.startswith(base_dir + os.sep):
             return jsonify({"status": "error", "message": "Invalid session id"}), 400
 
         out_path = os.path.realpath(
             os.path.join(session_dir, f"page-{page_idx}.html")
         )
-        if not out_path.startswith(session_dir):
+        if not out_path.startswith(session_dir + os.sep):
             return jsonify({"status": "error", "message": "Invalid page index"}), 400
 
         os.makedirs(session_dir, exist_ok=True)
@@ -682,6 +682,11 @@ def create_app():
     @app.route("/extracted/<session_id>/page-<int:page_idx>.html", methods=["GET", "POST"])
     def serve_extracted_page(session_id, page_idx):
         """Serve or update a single extracted page HTML file."""
+        base_dir = os.path.realpath(app.config["EXTRACTED_DIR"])
+        session_dir = os.path.realpath(os.path.join(base_dir, session_id))
+        if not session_dir.startswith(base_dir + os.sep):
+            return "Session not found", 404
+
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return "Session not found", 404
@@ -698,8 +703,6 @@ def create_app():
 
             return _save_page_html(session_id, page_idx, edited_html)
 
-        base_dir = app.config["EXTRACTED_DIR"]
-        session_dir = os.path.realpath(os.path.join(base_dir, session_id))
         if not os.path.isdir(session_dir):
             return "Extraction not found. Please run extraction first.", 404
 

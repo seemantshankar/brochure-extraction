@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Extract HTML fragments from brochure crops using an LLM and assemble pages."""
 import io
 import os
@@ -11,6 +12,7 @@ from functools import lru_cache
 from PIL import Image
 from openai import OpenAI
 from table_extractor.cache import cached_call
+from table_extractor.retry import PipelineCallError
 
 logger = logging.getLogger(__name__)
 
@@ -339,3 +341,181 @@ def run_extraction(
         "page_files": [f"page-{i}.html" for i in range(len(pages_data))],
         "index": "index.html",
     }
+
+
+# --- Extraction-in-progress guard (module level) ---
+_extraction_in_progress = set()
+_extraction_lock = threading.Lock()
+
+
+def _is_extraction_in_progress(session_id: str) -> bool:
+    with _extraction_lock:
+        return session_id in _extraction_in_progress
+
+
+def _set_extraction_in_progress(session_id: str):
+    with _extraction_lock:
+        _extraction_in_progress.add(session_id)
+
+
+def _clear_extraction_in_progress(session_id: str):
+    with _extraction_lock:
+        _extraction_in_progress.discard(session_id)
+
+
+def _remove_output_marker(session_id: str, output_dir: str) -> None:
+    session_dir = os.path.join(output_dir, session_id)
+    marker_path = os.path.join(session_dir, ".complete")
+    if os.path.exists(marker_path):
+        os.unlink(marker_path)
+
+
+def derive_required_tasks(meta: dict) -> list[dict]:
+    """Derive the list of required tasks based on page analysis.
+
+    For each page:
+    - If analysis_status != "done", skip page.
+    - If classification == "Simple", create a single page task.
+    - If classification == "Complex" and there are crops, create sorted crop tasks.
+    - If classification == "Complex" and there are no crops, fall back to page task.
+    """
+    tasks = []
+    for page_idx, page_info in enumerate(meta.get("pages", [])):
+        if page_info.get("analysis_status") != "done":
+            continue
+
+        classification = _get_classification(page_info)
+        crops = _get_sorted_crops(page_info)
+
+        if classification == "Simple":
+            tasks.append({
+                "task_id": f"page-{page_idx}",
+                "page_idx": page_idx,
+                "kind": "page",
+                "image_source": "page",
+            })
+        elif classification == "Complex":
+            if crops:
+                for crop_info in crops:
+                    crop_filename = (
+                        crop_info.get("filename")
+                        or crop_info.get("path")
+                        or crop_info.get("crop_filename")
+                    )
+                    if not crop_filename:
+                        continue
+                    task_id = os.path.splitext(crop_filename)[0]
+                    tasks.append({
+                        "task_id": task_id,
+                        "page_idx": page_idx,
+                        "kind": "crop",
+                        "crop_filename": crop_filename,
+                        "image_source": "crop",
+                    })
+            else:
+                tasks.append({
+                    "task_id": f"page-{page_idx}",
+                    "page_idx": page_idx,
+                    "kind": "page",
+                    "image_source": "page",
+                })
+    return tasks
+
+
+def reconcile_tasks(meta: dict, desired_tasks: list, fragments_dir: str) -> None:
+    """Reconcile meta["extraction_tasks"] with desired set. In-place mutation.
+
+    - Tasks whose task_id is in desired set: preserve status and fragment_path
+    - Tasks whose task_id is NOT in desired set: dropped from the list
+    - Desired tasks not yet in the list: added with "pending" status (unless fragment exists)
+    - If a surviving task has extraction_status=="extracted" but fragment file
+      is missing from disk: reset to "pending"
+    - If a surviving task has status!="extracted" but fragment file exists:
+      upgrade to "extracted" and set fragment_path
+    """
+    existing_tasks = meta.get("extraction_tasks", [])
+    desired_ids = {t["task_id"] for t in desired_tasks}
+    existing_by_id = {t["task_id"]: t for t in existing_tasks}
+
+    final = []
+    for desired in desired_tasks:
+        tid = desired["task_id"]
+        if tid in existing_by_id:
+            existing = existing_by_id[tid]
+            # Filesystem-level validation
+            frag_path = existing.get("fragment_path")
+            if frag_path:
+                has_fragment = os.path.exists(os.path.join(fragments_dir, os.path.basename(frag_path)))
+            else:
+                has_fragment = os.path.exists(os.path.join(fragments_dir, f"{tid}.html"))
+
+            if existing.get("extraction_status") == "extracted" and not has_fragment:
+                # Fragment lost — reset to pending
+                existing["extraction_status"] = "pending"
+                existing["fragment_path"] = None
+                existing["extraction_error"] = None
+                existing["extraction_error_type"] = None
+            elif existing.get("extraction_status") != "extracted" and has_fragment:
+                # Fragment exists but status is not extracted — accept the fragment
+                existing["extraction_status"] = "extracted"
+                if not existing.get("fragment_path"):
+                    existing["fragment_path"] = f"extraction_fragments/{tid}.html"
+                existing["extraction_error"] = None
+                existing["extraction_error_type"] = None
+            final.append(existing)
+        else:
+            # Brand new task
+            frag_path = f"extraction_fragments/{tid}.html"
+            if os.path.exists(os.path.join(fragments_dir, tid + ".html")):
+                final.append({
+                    **desired,
+                    "extraction_status": "extracted",
+                    "fragment_path": frag_path,
+                    "extraction_error": None,
+                    "extraction_error_type": None,
+                })
+            else:
+                final.append({
+                    **desired,
+                    "extraction_status": "pending",
+                    "fragment_path": None,
+                    "extraction_error": None,
+                    "extraction_error_type": None,
+                })
+
+    meta["extraction_tasks"] = final
+
+
+def on_crop_mutation(meta: dict, sm, session_id: str, output_dir: str) -> None:
+    """Invalidate stale fragments/tasks after a crop mutation. In-place on meta."""
+    if _is_extraction_in_progress(session_id):
+        raise RuntimeError("Extraction job is running — cancel it or wait before mutating crops")
+    desired_tasks = derive_required_tasks(meta)
+    desired_ids = {t["task_id"] for t in desired_tasks}
+    existing_tasks = meta.get("extraction_tasks", [])
+    fragments_dir = sm.get_extraction_fragments_dir(session_id)
+
+    for task in existing_tasks:
+        if task["task_id"] not in desired_ids:
+            frag_path = task.get("fragment_path")
+            if frag_path:
+                full_path = os.path.join(fragments_dir, os.path.basename(frag_path))
+                if os.path.exists(full_path):
+                    os.unlink(full_path)
+
+    existing_by_id = {t["task_id"]: t for t in existing_tasks}
+    final = []
+    for desired in desired_tasks:
+        tid = desired["task_id"]
+        if tid in existing_by_id:
+            final.append(existing_by_id[tid])
+        else:
+            final.append({
+                **desired,
+                "extraction_status": "pending",
+                "extraction_error": None,
+                "extraction_error_type": None,
+                "fragment_path": None,
+            })
+    meta["extraction_tasks"] = final
+    _remove_output_marker(session_id, output_dir)

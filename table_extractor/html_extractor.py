@@ -11,8 +11,14 @@ import threading
 from functools import lru_cache
 from PIL import Image
 from openai import OpenAI
-from table_extractor.cache import cached_call
-from table_extractor.retry import PipelineCallError
+from table_extractor.cache import cached_call, CACHE_DIR, _cache_key
+from table_extractor.retry import (
+    PipelineCallError,
+    retry_with_backoff,
+    BlankResponseError,
+    is_blank_fragment,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +129,9 @@ def extract_crop_as_html(crop_image: Image.Image, model: str) -> str:
         raw_content = response.choices[0].message.content or ""
         html_fragment = clean_up_html_fragment(raw_content)
 
+        if is_blank_fragment(html_fragment):
+            raise BlankResponseError("LLM returned an empty/blank HTML fragment")
+
         usage_meta = {}
         if response.usage:
             usage_meta = {
@@ -132,15 +141,26 @@ def extract_crop_as_html(crop_image: Image.Image, model: str) -> str:
 
         return [html_fragment, usage_meta]
 
-    try:
-        result = cached_call(
+    def _cached_extract():
+        return cached_call(
             image_bytes=img_bytes,
             stage="html_extract",
             model=model,
-            fn=_call,
+            fn=lambda: retry_with_backoff(_call),
             force=False,
             extra_key=system_prompt,
         )
+
+    try:
+        result = _cached_extract()
+
+        # Stale blank cache invalidation
+        if is_blank_fragment(result[0]):
+            cache_key = _cache_key(img_bytes, "html_extract", model, system_prompt)
+            cache_file = os.path.join(CACHE_DIR, f"{cache_key}.json")
+            if os.path.exists(cache_file):
+                os.unlink(cache_file)
+            result = _cached_extract()
     except Exception as e:
         logger.error(f"LLM extraction failed for crop (model={model}): {e}")
         raise

@@ -1,4 +1,5 @@
 """Flask web application for brochure upload, cropping, analysis, and HTML extraction."""
+from __future__ import annotations
 import os
 import sys
 import json
@@ -32,7 +33,6 @@ from session_manager import SessionManager
 from crop_manager import CropManager
 from pdf_converter import pdf_to_pages, upgrade_page_to_hires
 from llm import analyze_page
-from table_extractor.html_extractor import run_extraction
 
 UPLOAD_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
 
@@ -55,6 +55,11 @@ def normalize_classification(page):
     return None
 
 
+def _sse_event(payload: dict) -> str:
+    import json
+    return f"data: {json.dumps(payload)}\n\n"
+
+
 def create_app():
     """Create and configure the Flask application."""
     app = Flask(__name__)
@@ -72,6 +77,20 @@ def create_app():
 
     sm = SessionManager(app.config["UPLOAD_DIR"], app.config["CROP_DIR"])
     app.session_manager = sm
+
+    from table_extractor.html_extractor import (
+        ExtractionJob,
+        _start_extraction_job,
+        _get_active_job,
+        _output_complete,
+        set_output_root,
+        derive_required_tasks,
+        on_crop_mutation,
+        _is_extraction_in_progress,
+        reconcile_tasks,
+        ExtractionInProgressError,
+    )
+    set_output_root(app.config["EXTRACTED_DIR"])
 
     @app.route("/health")
     def health():
@@ -176,45 +195,55 @@ def create_app():
 
     @app.route("/analyze/<session_id>", methods=["POST"])
     def analyze_session(session_id):
-        """Analyze all unclassified pages in a session."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return jsonify({"error": "Session not found"}), 404
-
-        meta = _sm.load_meta(session_id)
         page_dir = _sm.get_page_dir(session_id)
         session_dir = _sm.get_session_dir(session_id)
-        updated = False
 
-        for page_info in meta["pages"]:
-            if page_info.get("classification") is not None:
+        # 1. Read snapshot: identify pages needing analysis (no lock held)
+        meta_snapshot = _sm.load_meta(session_id)
+        pending = []
+        for page_idx, page_info in enumerate(meta_snapshot["pages"]):
+            if page_info.get("analysis_status") == "done":
                 continue
-
             page_path = os.path.join(page_dir, page_info["path"])
+            pending.append((page_idx, page_path, page_info))
+
+        # 2. Call the LLM WITHOUT holding the lock (slow I/O outside critical section)
+        results = []
+        for page_idx, page_path, page_snapshot in pending:
             if not os.path.exists(page_path):
-                page_info["classification"] = "Complex"
-                page_info["error"] = "Page file missing"
-                updated = True
+                results.append((page_idx, {"classification": None, "error": "Page file missing"}))
                 continue
-
             result = analyze_page(page_path)
-            page_info["classification"] = result.get("classification", "Complex")
-            if result.get("error"):
-                page_info["error"] = result["error"]
-
-            if page_info["classification"] == "Complex" and page_info.get("pdf_path") and page_info.get("pdf_page") is not None:
+            if result.get("classification") == "Complex" and \
+               page_snapshot.get("pdf_path") and page_snapshot.get("pdf_page") is not None:
                 try:
-                    pdf_full_path = os.path.join(session_dir, page_info["pdf_path"])
-                    upgrade_page_to_hires(pdf_full_path, page_path, page_info["pdf_page"])
-                    page_info["upgraded"] = True
+                    pdf_full_path = os.path.join(session_dir, page_snapshot["pdf_path"])
+                    upgrade_page_to_hires(pdf_full_path, page_path, page_snapshot["pdf_page"])
                 except Exception as e:
-                    page_info["upgrade_error"] = str(e)
+                    result = dict(result)
+                    result["upgrade_error"] = str(e)
+            results.append((page_idx, result))
 
-            updated = True
-
-        if updated:
-            _sm.save_meta(session_id, meta)
-
+        # 3. Acquire lock → reload current meta → apply this page's result by index → atomic save
+        with _sm.metadata_lock(session_id):
+            meta = _sm.load_meta(session_id)
+            for page_idx, result in results:
+                if page_idx >= len(meta["pages"]):
+                    continue
+                page_info = meta["pages"][page_idx]
+                if result.get("classification") is None:
+                    page_info["analysis_status"] = "error"
+                    page_info["analysis_error"] = result.get("error")
+                else:
+                    page_info["analysis_status"] = "done"
+                    page_info["classification"] = result["classification"]
+                    page_info["analysis_error"] = None
+                    if result.get("upgrade_error"):
+                        page_info["upgrade_error"] = result["upgrade_error"]
+            _sm.save_meta_atomic(session_id, meta)
         return jsonify(meta)
 
     @app.route("/session/<session_id>", methods=["GET"])
@@ -241,108 +270,111 @@ def create_app():
 
     @app.route("/commit/<session_id>", methods=["POST"])
     def commit_crops(session_id):
-        """Save new crop regions for a page and persist them."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return jsonify({"error": "Session not found"}), 404
-
         data = request.get_json()
         if not data or "page_index" not in data or "crops" not in data:
             return jsonify({"error": "Missing page_index or crops"}), 400
-
-        meta = _sm.load_meta(session_id)
-        page_index = data["page_index"]
-        if page_index >= len(meta["pages"]):
-            return jsonify({"error": "Invalid page_index"}), 400
-
-        page_info = meta["pages"][page_index]
-        page_path = os.path.join(_sm.get_page_dir(session_id), page_info["path"])
-
-        cm = CropManager(app.config["CROP_DIR"])
-        existing = page_info.get("crops", [])
-        existing_keys = {
-            (round(c["bbox"][0], 6), round(c["bbox"][1], 6),
-             round(c["bbox"][2], 6), round(c["bbox"][3], 6))
-            for c in existing
-        }
-
-        newly_saved = []
-        for item in data["crops"]:
-            bbox = item["bbox"]
-            key = (round(bbox[0], 6), round(bbox[1], 6),
-                   round(bbox[2], 6), round(bbox[3], 6))
-            if key in existing_keys:
-                continue
-            crop_path = cm.save_crop(session_id, page_path, bbox)
-            crop_filename = os.path.basename(crop_path)
-            record = {
-                "path": crop_filename,
-                "filename": crop_filename,
-                "bbox": bbox,
+        with _sm.metadata_lock(session_id):
+            if _is_extraction_in_progress(session_id):
+                return jsonify({"status": "error", "message": "Extraction in progress"}), 409
+            meta = _sm.load_meta(session_id)
+            page_index = data["page_index"]
+            if page_index >= len(meta["pages"]):
+                return jsonify({"error": "Invalid page_index"}), 400
+            page_info = meta["pages"][page_index]
+            page_path = os.path.join(_sm.get_page_dir(session_id), page_info["path"])
+            cm = CropManager(app.config["CROP_DIR"])
+            existing = page_info.get("crops", [])
+            existing_keys = {
+                (round(c["bbox"][0], 6), round(c["bbox"][1], 6),
+                 round(c["bbox"][2], 6), round(c["bbox"][3], 6))
+                for c in existing
             }
-            newly_saved.append(record)
-            existing.append(record)
-
-        page_info["crops"] = existing
-        if "draft" in page_info:
-            del page_info["draft"]
-        _sm.save_meta(session_id, meta)
-
+            next_id = meta.get("next_crop_id", 0)
+            newly_saved = []
+            for item in data["crops"]:
+                bbox = item["bbox"]
+                key = (round(bbox[0], 6), round(bbox[1], 6),
+                       round(bbox[2], 6), round(bbox[3], 6))
+                if key in existing_keys:
+                    continue
+                filename = f"crop_{next_id:03d}.png"
+                crop_path = cm.save_crop(session_id, page_path, bbox, filename=filename)
+                crop_filename = os.path.basename(crop_path)
+                record = {"path": crop_filename, "filename": crop_filename, "bbox": bbox}
+                newly_saved.append(record)
+                existing.append(record)
+                next_id += 1
+            page_info["crops"] = existing
+            meta["next_crop_id"] = next_id
+            if "draft" in page_info:
+                del page_info["draft"]
+            on_crop_mutation(meta, _sm, session_id, app.config["EXTRACTED_DIR"])
+            _sm.save_meta_atomic(session_id, meta)
         return jsonify({"crops": existing, "added": newly_saved, "page_index": page_index})
 
     @app.route("/trim/<session_id>/<crop_filename>", methods=["POST"])
     def trim_crop(session_id, crop_filename):
-        """Trim an existing crop to a new bounding box."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return jsonify({"error": "Session not found"}), 404
-
-        cm = CropManager(app.config["CROP_DIR"])
-        session_crop_dir = os.path.join(cm.crop_root, session_id)
-        crop_path = os.path.join(session_crop_dir, crop_filename)
-
-        if not os.path.exists(crop_path):
-            return jsonify({"error": "Crop not found"}), 404
-
         data = request.get_json()
         if not data or "bbox" not in data:
             return jsonify({"error": "Missing bbox"}), 400
-
-        cm.trim_crop(crop_path, data["bbox"])
-
+        with _sm.metadata_lock(session_id):
+            if _is_extraction_in_progress(session_id):
+                return jsonify({"status": "error", "message": "Extraction in progress"}), 409
+            meta = _sm.load_meta(session_id)
+            fragments_dir = _sm.get_extraction_fragments_dir(session_id)
+            task_id = os.path.splitext(crop_filename)[0]
+            for task in meta.get("extraction_tasks", []):
+                if task["task_id"] == task_id:
+                    task["extraction_status"] = "pending"
+                    task["extraction_error"] = None
+                    task["extraction_error_type"] = None
+                    frag_path = os.path.join(fragments_dir, f"{task_id}.html")
+                    if os.path.exists(frag_path):
+                        os.unlink(frag_path)
+                    task["fragment_path"] = None
+                    break
+            cm = CropManager(app.config["CROP_DIR"])
+            session_crop_dir = os.path.join(cm.crop_root, session_id)
+            crop_path = os.path.join(session_crop_dir, crop_filename)
+            if not os.path.exists(crop_path):
+                return jsonify({"error": "Crop not found"}), 404
+            cm.trim_crop(crop_path, data["bbox"])
+            on_crop_mutation(meta, _sm, session_id, app.config["EXTRACTED_DIR"])
+            _sm.save_meta_atomic(session_id, meta)
         return jsonify({"path": crop_path, "filename": crop_filename})
 
     @app.route("/delete-crop/<session_id>", methods=["POST"])
     def delete_crop(session_id):
-        """Delete a crop file and remove it from session metadata."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return jsonify({"error": "Session not found"}), 404
-
         data = request.get_json()
         if not data or "page_index" not in data or "filename" not in data:
             return jsonify({"error": "Missing page_index or filename"}), 400
-
-        meta = _sm.load_meta(session_id)
-        page_index = data["page_index"]
-        if page_index >= len(meta["pages"]):
-            return jsonify({"error": "Invalid page_index"}), 400
-
-        page_info = meta["pages"][page_index]
-        filename = data["filename"]
-
-        cm = CropManager(app.config["CROP_DIR"])
-        crop_path = os.path.join(cm.crop_root, session_id, filename)
-        if os.path.exists(crop_path):
-            os.remove(crop_path)
-
-        before = len(page_info.get("crops", []))
-        page_info["crops"] = [
-            c for c in page_info.get("crops", []) if c.get("filename") != filename
-        ]
-        removed = before - len(page_info["crops"])
-
-        _sm.save_meta(session_id, meta)
+        with _sm.metadata_lock(session_id):
+            if _is_extraction_in_progress(session_id):
+                return jsonify({"status": "error", "message": "Extraction in progress"}), 409
+            meta = _sm.load_meta(session_id)
+            page_index = data["page_index"]
+            if page_index >= len(meta["pages"]):
+                return jsonify({"error": "Invalid page_index"}), 400
+            page_info = meta["pages"][page_index]
+            filename = data["filename"]
+            cm = CropManager(app.config["CROP_DIR"])
+            crop_path = os.path.join(cm.crop_root, session_id, filename)
+            if os.path.exists(crop_path):
+                os.remove(crop_path)
+            before = len(page_info.get("crops", []))
+            page_info["crops"] = [c for c in page_info.get("crops", []) if c.get("filename") != filename]
+            removed = before - len(page_info["crops"])
+            on_crop_mutation(meta, _sm, session_id, app.config["EXTRACTED_DIR"])
+            _sm.save_meta_atomic(session_id, meta)
         return jsonify({"ok": True, "removed": removed})
 
     @app.route("/crops/<session_id>/<crop_filename>", methods=["GET"])
@@ -365,17 +397,37 @@ def create_app():
             if not meta:
                 continue
             session_dir = _sm.get_session_dir(sid)
-            page_count = len(meta.get("pages", []))
-            crop_count = sum(len(p.get("crops", [])) for p in meta.get("pages", []))
+            pages = meta.get("pages", [])
+            done = sum(1 for p in pages if p.get("analysis_status") == "done")
+            errored = sum(1 for p in pages if p.get("analysis_status") == "error")
+            if done == 0:
+                analysis_status = "Not classified"
+            elif errored:
+                analysis_status = f"Partial ({errored} errors)"
+            elif done == len(pages):
+                analysis_status = "Done"
+            else:
+                analysis_status = f"{done} of {len(pages)} pages classified"
+            tasks = meta.get("extraction_tasks", [])
+            extracted = sum(1 for t in tasks if t.get("extraction_status") == "extracted")
+            if not tasks:
+                extraction_status = "No tasks extracted"
+            elif _output_complete(sid):
+                extraction_status = "Done"
+            elif extracted == len(tasks):
+                extraction_status = "Interrupted — click to resume"
+            else:
+                extraction_status = f"{extracted} of {len(tasks)} tasks extracted"
+            page_count = len(pages)
+            crop_count = sum(len(p.get("crops", [])) for p in pages)
             files = meta.get("files", [])
             name = files[0] if files else sid
             sessions.append({
-                "id": sid,
-                "name": name,
-                "files": files,
-                "page_count": page_count,
-                "crop_count": crop_count,
+                "id": sid, "name": name, "files": files,
+                "page_count": page_count, "crop_count": crop_count,
                 "uploaded_at": os.path.getmtime(session_dir),
+                "analysis_status": analysis_status,
+                "extraction_status": extraction_status,
             })
         return render_template("sessions.html", sessions=sessions)
 
@@ -439,7 +491,6 @@ def create_app():
 
     @app.route("/extract-html/<session_id>", methods=["GET"])
     def extract_html_page(session_id):
-        """Render the HTML extraction progress page for a session."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return render_template("error.html", message="Session not found"), 400
@@ -447,45 +498,98 @@ def create_app():
         for page in meta.get("pages", []):
             if page.get("draft") and len(page["draft"]) > 0:
                 return render_template("error.html", message="You have uncommitted changes. Please commit them before extracting HTML."), 400
-        if not any(page.get("crops") for page in meta.get("pages", [])):
-            return render_template("error.html", message="No crops have been committed. Please commit at least one crop region before extracting HTML."), 400
+        analyzed = all(p.get("analysis_status") == "done" for p in meta.get("pages", []))
+        if not analyzed:
+            return render_template("error.html", message="Please analyze all pages before extracting HTML."), 400
+        if _output_complete(session_id):
+            return redirect(f"/extracted/{session_id}/extraction.html")
         return render_template("extract_progress.html", session_id=session_id)
+
+    @app.route("/extract-html/<session_id>", methods=["POST"])
+    def start_extraction(session_id):
+        _sm = app.session_manager
+        if not _sm.session_exists(session_id):
+            return jsonify({"error": "Session not found"}), 404
+        retry_nonretryable = request.args.get("retry_nonretryable", "false") == "true"
+        meta = _sm.load_meta(session_id)
+        if not all(p.get("analysis_status") == "done" for p in meta.get("pages", [])):
+            return jsonify({"status": "error", "message": "Not all pages analyzed"}), 400
+        tasks = meta.get("extraction_tasks", [])
+        if not retry_nonretryable:
+            auth_failed = [t for t in tasks
+                           if t["extraction_status"] == "failed"
+                           and t.get("extraction_error_type") in ("auth", "credits")]
+            if auth_failed:
+                return jsonify({
+                    "status": "error",
+                    "message": "Auth/credit failure. Call with ?retry_nonretryable=true after fixing.",
+                    "error_type": auth_failed[0]["extraction_error_type"],
+                }), 400
+        try:
+            _start_extraction_job(
+                session_id, _sm, app.config["CROP_DIR"], _sm.get_page_dir(session_id),
+                app.config["EXTRACTED_DIR"], os.environ["DATA_EXTRACTION_MODEL_ID"],
+                retry_nonretryable=retry_nonretryable,
+            )
+        except ExtractionInProgressError:
+            return jsonify({"status": "error", "message": "Extraction already running"}), 409
+        return jsonify({"status": "started"})
 
     @app.route("/extract-progress/<session_id>", methods=["GET"])
     def extract_progress_sse(session_id):
-        """Stream HTML extraction progress as server-sent events."""
         _sm = app.session_manager
         if not _sm.session_exists(session_id):
             return "Session not found", 404
 
         def generate():
-            """Yield SSE events for the extraction pipeline."""
-            yield f"data: {json.dumps({'status': 'starting'})}\n\n"
-
-            cancel_event = threading.Event()
-
-            try:
-                for event in run_extraction(
-                    session_id=session_id,
-                    sm=_sm,
-                    crop_root=app.config["CROP_DIR"],
-                    model=os.environ["DATA_EXTRACTION_MODEL_ID"],
-                    cancel_event=cancel_event,
-                ):
-                    if event["status"] == "done":
-                        yield f"data: {json.dumps({'status': 'done'})}\n\n"
+            yield _sse_event({"status": "starting"})
+            while True:
+                meta = _sm.load_meta(session_id)
+                tasks = meta.get("extraction_tasks", [])
+                completed = sum(1 for t in tasks if t["extraction_status"] == "extracted")
+                total = len(tasks)
+                job = _get_active_job(session_id)
+                if job is None:
+                    if _output_complete(session_id):
+                        yield _sse_event({"status": "done", "progress": completed, "total": total})
+                        return
+                    failed = [t for t in tasks if t["extraction_status"] == "failed"]
+                    if failed:
+                        terminal_err = next(
+                            (t for t in failed if t["extraction_error_type"] in ("auth", "credits")),
+                            failed[0])
+                        yield _sse_event({
+                            "status": "error",
+                            "error_type": terminal_err.get("extraction_error_type") or "retryable",
+                            "message": terminal_err.get("extraction_error") or "Tasks failed",
+                            "progress": completed, "total": total,
+                        })
+                        return
+                    if total == 0:
+                        yield _sse_event({"status": "idle", "message": "Extraction not started"})
+                        return
+                    yield _sse_event({
+                        "status": "paused", "progress": completed, "total": total,
+                        "message": "Extraction interrupted. Click Retry to resume.",
+                    })
+                    return
+                if job.done_event.is_set():
+                    if job.result == "cancelled":
+                        yield _sse_event({"status": "cancelled", "progress": completed, "total": total})
+                    elif job.result == "error":
+                        yield _sse_event({
+                            "status": "error", "error_type": job.error_type or "retryable",
+                            "message": job.error_message or "Tasks failed",
+                            "progress": completed, "total": total,
+                        })
                     else:
-                        yield f"data: {json.dumps(event)}\n\n"
-
-            except GeneratorExit:
-                cancel_event.set()
-                logger.info("Client disconnected from SSE stream for session %s", session_id)
-                raise
-            except Exception as e:
-                import traceback
-                tb = traceback.format_exc()
-                logger.error("HTML extraction failed for session %s: %s\n%s", session_id, e, tb)
-                yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
+                        yield _sse_event({"status": "done", "progress": completed, "total": total})
+                    return
+                yield _sse_event({
+                    "status": "progress", "progress": completed, "total": total,
+                    "log": f"Extracted {completed}/{total} regions...",
+                })
+                job.done_event.wait(timeout=0.5)
 
         return Response(generate(), mimetype="text/event-stream")
 
@@ -550,6 +654,10 @@ def create_app():
         if not os.path.isdir(session_dir):
             return "Extraction not found. Please run extraction first.", 404
 
+        complete_marker = os.path.join(session_dir, ".complete")
+        if not os.path.exists(complete_marker):
+            return "Extraction not complete. Please retry.", 404
+
         index_path = os.path.join(session_dir, "index.html")
         if os.path.exists(index_path):
             return send_file(index_path, mimetype="text/html")
@@ -579,6 +687,10 @@ def create_app():
         session_dir = os.path.realpath(os.path.join(base_dir, session_id))
         if not os.path.isdir(session_dir):
             return "Extraction not found. Please run extraction first.", 404
+
+        complete_marker = os.path.join(session_dir, ".complete")
+        if not os.path.exists(complete_marker):
+            return "Extraction not complete. Please retry.", 404
 
         out_path = os.path.realpath(
             os.path.join(session_dir, f"page-{page_idx}.html")

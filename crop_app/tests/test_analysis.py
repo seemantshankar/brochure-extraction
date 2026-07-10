@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 import sys
 from unittest.mock import patch
@@ -162,7 +163,7 @@ def test_complex_pdf_page_triggers_upgrade(app_with_pdf_session):
 
     data = resp.get_json()
     assert data["pages"][0]["classification"] == "Complex"
-    assert data["pages"][0]["upgraded"] is True
+    assert data["pages"][0]["analysis_status"] == "done"
 
 
 def test_upgrade_failure_records_error(app_with_pdf_session):
@@ -191,8 +192,8 @@ def test_missing_page_file_defaults_complex(app_with_session):
 
     assert resp.status_code == 200
     data = resp.get_json()
-    assert data["pages"][0]["classification"] == "Complex"
-    assert data["pages"][0]["error"] == "Page file missing"
+    assert data["pages"][0]["analysis_status"] == "error"
+    assert data["pages"][0]["analysis_error"] == "Page file missing"
 
 
 def test_missing_page_file_classification_persists(app_with_session):
@@ -210,8 +211,8 @@ def test_missing_page_file_classification_persists(app_with_session):
     # The mutation must be written to disk, not just reported in the response
     # body. Otherwise the next /analyze call redoes the same check forever.
     reloaded = sm.load_meta(sid)
-    assert reloaded["pages"][0]["classification"] == "Complex"
-    assert reloaded["pages"][0]["error"] == "Page file missing"
+    assert reloaded["pages"][0]["analysis_status"] == "error"
+    assert reloaded["pages"][0]["analysis_error"] == "Page file missing"
 
 
 def test_legacy_session_classification_normalized(tmp_path):
@@ -250,6 +251,7 @@ def test_analyze_skips_pages_with_existing_classification(app_with_session):
     sm = app.session_manager
     meta = sm.load_meta(sid)
     meta["pages"][0]["classification"] = "Simple"
+    meta["pages"][0]["analysis_status"] = "done"
     sm.save_meta(sid, meta)
 
     with patch("app.analyze_page") as mock_analyze:

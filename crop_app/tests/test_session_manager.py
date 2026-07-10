@@ -56,7 +56,8 @@ def test_get_crop_dir(manager):
 def test_save_meta_atomic_creates_no_tmp_leftover(manager):
     sid = manager.create_session()
     data = {"pages": []}
-    manager.save_meta_atomic(sid, data)
+    with manager.metadata_lock(sid):
+        manager.save_meta_atomic(sid, data)
     session_dir = os.path.join(manager.upload_dir, sid)
     leftovers = [f for f in os.listdir(session_dir) if f.endswith(".json.tmp")]
     assert leftovers == []
@@ -77,7 +78,8 @@ def test_metadata_lock_returns_same_object_per_session(manager):
 
 def test_concurrent_writes_under_lock_are_consistent(manager):
     sid = manager.create_session()
-    manager.save_meta_atomic(sid, {"counter": 0, "pages": []})
+    with manager.metadata_lock(sid):
+        manager.save_meta_atomic(sid, {"counter": 0, "pages": []})
 
     def worker():
         for _ in range(50):

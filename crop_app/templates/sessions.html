@@ -206,6 +206,8 @@
               {% if s.crop_count > 0 %}
                 <span class="session-detail">Crops: {{ s.crop_count }}</span>
               {% endif %}
+              <span class="session-detail">Analysis: {{ s.analysis_status }}</span>
+              <span class="session-detail">Extraction: {{ s.extraction_status }}</span>
               <span class="session-detail">{{ s.uploaded_at | datetime }}</span>
             </div>
             {% if s.files|length > 1 %}

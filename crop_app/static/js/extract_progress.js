@@ -54,6 +54,27 @@ document.addEventListener("DOMContentLoaded", function () {
     errorMsg.textContent = message || "Extraction failed. Please check server logs.";
   }
 
+  function showRetry(message, url) {
+    progressArea.hidden = true;
+    var retryArea = document.getElementById("retry-area");
+    var retryMsg = document.getElementById("retry-msg");
+    var retryBtn = document.getElementById("retry-btn");
+    retryMsg.textContent = message;
+    retryBtn.disabled = false;
+    retryBtn.textContent = "Retry";
+    retryBtn.onclick = function () {
+      retryBtn.disabled = true;
+      retryBtn.textContent = "Retrying...";
+      fetch(url, { method: "POST" })
+        .then(function () { window.location.reload(); })
+        .catch(function () {
+          retryBtn.disabled = false;
+          retryBtn.textContent = "Retry";
+        });
+    };
+    retryArea.hidden = false;
+  }
+
   setProgress(3);
   appendLog("Starting extraction pipeline...");
 
@@ -69,9 +90,11 @@ document.addEventListener("DOMContentLoaded", function () {
       appendLog("Extraction server connected. Working...");
 
     } else if (data.status === "progress") {
-      var pct = 10 + ((data.page || 0) / Math.max(1, data.totalPages || 1)) * 80;
+      var total = data.total || data.totalPages || 1;
+      var done = data.progress || data.page || 0;
+      var pct = 10 + (done / Math.max(1, total)) * 80;
       setProgress(Math.min(pct, 90));
-      statusText.textContent = "Page " + ((data.page || 0) + 1) + " of " + (data.totalPages || "?");
+      statusText.textContent = "Extracted " + done + " of " + total + " regions...";
       if (data.log) appendLog(data.log);
 
     } else if (data.status === "done") {
@@ -82,12 +105,35 @@ document.addEventListener("DOMContentLoaded", function () {
       setTimeout(showResult, 700);
       source.close();
 
+    } else if (data.status === "cancelled") {
+      setProgress(100);
+      pctText.textContent = "✗";
+      statusText.textContent = "Cancelled";
+      appendLog("Extraction cancelled.");
+      source.close();
+
+    } else if (data.status === "paused") {
+      appendLog("Interrupted — click Resume to continue.");
+      showRetry("Extraction interrupted. Resume from where it left off?", "/extract-html/" + sessionId);
+
+    } else if (data.status === "idle") {
+      appendLog("No extraction started yet.");
+      showRetry("Start extraction?", "/extract-html/" + sessionId);
+
     } else if (data.status === "error") {
       setProgress(100);
       pctText.textContent = "✗";
       statusText.textContent = "Failed";
       appendLog("ERROR: " + (data.message || "unknown"));
-      setTimeout(function () { showError(data.message); }, 500);
+      var isAuth = ["auth", "credits"].includes(data.error_type);
+      if (isAuth) {
+        showRetry(
+          (data.message || "Authentication/credit failure.") + " Fix it, then click Retry.",
+          "/extract-html/" + sessionId + "?retry_nonretryable=true"
+        );
+      } else {
+        showError(data.message);
+      }
       source.close();
     }
   };

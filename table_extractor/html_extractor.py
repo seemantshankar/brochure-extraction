@@ -8,6 +8,10 @@ import base64
 import logging
 import concurrent.futures
 import threading
+import weakref
+import tempfile
+import time
+import json
 from functools import lru_cache
 from PIL import Image
 from openai import OpenAI
@@ -168,199 +172,287 @@ def extract_crop_as_html(crop_image: Image.Image, model: str) -> str:
     return result[0]
 
 
-def run_extraction(
-    session_id: str,
-    sm,
-    crop_root: str,
-    model: str,
-    max_workers: int = None,
-    cancel_event: threading.Event = None,
-    output_root: str = None,
-):
-    """Run full HTML extraction, yielding progress dicts and the final HTML document.
+class ExtractionInProgressError(RuntimeError):
+    pass
 
-    Args:
-        cancel_event: Optional threading.Event. When set, the extraction loop
-            stops submitting work and yields a "cancelled" status before exiting.
-        output_root: Optional root directory for extracted page files. Defaults
-            to crop_app/static/extracted.
 
-    Yields:
-        {"status": "progress", "page": int, "totalPages": int, "log": str} — during extraction
-        {"status": "cancelled"} — emitted when cancel_event is set mid-flight
-        {"status": "done", "page_files": list, "index": str} — per-page file manifest
-    """
-    from table_extractor.html_assembler import write_page_files
-
-    meta = sm.load_meta(session_id)
-    if not meta:
-        raise ValueError(f"Session {session_id} not found")
-
-    pages = meta.get("pages", [])
-    page_dir = sm.get_page_dir(session_id)
-    session_files = meta.get("files", [])
-    title = session_files[0] if session_files else f"Session {session_id[:8]}"
-    total_pages = len(pages)
-
-    tasks = []
-
-    for page_idx, page_info in enumerate(pages):
-        classification = _get_classification(page_info)
-        crops = _get_sorted_crops(page_info)
-        is_complex = classification == "Complex"
-
-        if not is_complex or len(crops) == 0:
-            tasks.append({
-                "page_idx": page_idx,
-                "crop_idx": None,
-                "image_path": os.path.join(page_dir, page_info["path"]),
-                "crop_filename": None,
-                "is_simple": True,
-            })
-        else:
-            for crop_idx, crop_info in enumerate(crops):
-                crop_filename = (
-                    crop_info.get("filename")
-                    or crop_info.get("path")
-                    or crop_info.get("crop_filename")
-                )
-                tasks.append({
-                    "page_idx": page_idx,
-                    "crop_idx": crop_idx,
-                    "image_path": os.path.join(crop_root, session_id, crop_filename) if crop_filename else None,
-                    "crop_filename": crop_filename,
-                    "is_simple": False,
-                })
-
-    total_tasks = len(tasks)
-
-    yield {
-        "status": "progress",
-        "page": 0,
-        "totalPages": total_tasks,
-        "log": f"Starting parallel extraction of {total_tasks} region(s) across {total_pages} page(s)...",
-    }
-
-    results = {}
-    results_lock = threading.Lock()
-    completed_count = {"count": 0}
-    completed_lock = threading.Lock()
-
-    def _process_task(task):
-        """Extract HTML for a single page or crop task."""
-        page_idx = task["page_idx"]
-        crop_idx = task["crop_idx"]
-        image_path = task["image_path"]
-        crop_filename = task["crop_filename"]
-        is_simple = task["is_simple"]
-
-        if not image_path or not os.path.exists(image_path):
-            if is_simple:
-                fragment = '<div class="error-region">Page file not found</div>'
-            elif not crop_filename:
-                fragment = '<div class="error-region">Crop missing filename reference</div>'
-            else:
-                fragment = f'<div class="error-region">Crop file not found: {html.escape(crop_filename)}</div>'
-        else:
-            try:
-                with Image.open(image_path) as img:
-                    crop_img = img.copy()
-                    crop_img.filename = image_path
-                fragment = extract_crop_as_html(crop_img, model)
-                if not fragment:
-                    fragment = ""
-            except Exception as e:
-                logger.error(f"Extraction failed for page={page_idx} crop={crop_idx}: {e}")
-                path_label = "page" if is_simple else crop_filename
-                fragment = (
-                    f'<div class="error-region">Extraction failed for '
-                    f'{html.escape(str(path_label))}: {html.escape(str(e))}</div>'
-                )
-
-        return {
-            "page_idx": page_idx,
-            "crop_idx": crop_idx,
-            "fragment": fragment,
-        }
-
-    workers = max_workers if max_workers is not None else EXTRACTION_MAX_WORKERS
-    cancelled = False
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-        future_to_task = {executor.submit(_process_task, t): t for t in tasks}
-
+def _write_complete_marker(session_output_dir: str) -> None:
+    """Write .complete marker atomically via temp file + os.replace."""
+    fd, tmp_path = tempfile.mkstemp(dir=session_output_dir, suffix=".txt")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"timestamp": time.time()}, f)
+        os.replace(tmp_path, os.path.join(session_output_dir, ".complete"))
+    except BaseException:
         try:
-            for future in concurrent.futures.as_completed(future_to_task):
-                if cancel_event is not None and cancel_event.is_set():
-                    cancelled = True
-                    for f in future_to_task:
-                        f.cancel()
-                    break
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
-                task = future_to_task[future]
-                try:
-                    result = future.result()
-                except Exception as e:
-                    result = {
-                        "page_idx": task["page_idx"],
-                        "crop_idx": task["crop_idx"],
-                        "fragment": f'<div class="error-region">Thread execution failed: {html.escape(str(e))}</div>',
-                    }
 
-                with results_lock:
-                    results[(result["page_idx"], result["crop_idx"])] = result["fragment"]
+def _output_complete(session_id: str) -> bool:
+    session_output_dir = os.path.join(_OUTPUT_ROOT, session_id)
+    return os.path.exists(os.path.join(session_output_dir, ".complete"))
 
-                with completed_lock:
-                    completed_count["count"] += 1
-                    completed = completed_count["count"]
 
-                yield {
-                    "status": "progress",
-                    "page": completed,
-                    "totalPages": total_tasks,
-                    "log": f"Extracted {completed}/{total_tasks} region(s)...",
-                }
+# Module-level output root, set by app.py at startup via set_output_root().
+_OUTPUT_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "crop_app", "static", "extracted")
+
+
+def set_output_root(output_root: str) -> None:
+    """Allow app.py to set the extracted output root."""
+    global _OUTPUT_ROOT
+    _OUTPUT_ROOT = output_root
+
+
+class ExtractionJob:
+    """Background extraction job for a session."""
+
+    def __init__(self, session_id, sm, crop_root, page_dir, output_dir, model,
+                 max_workers=4, retry_nonretryable=False):
+        self.session_id = session_id
+        self.sm = sm
+        self.crop_root = crop_root
+        self.page_dir = page_dir
+        self.output_dir = output_dir
+        self.model = model
+        self.max_workers = max_workers
+        self.retry_nonretryable = retry_nonretryable
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        self.cancel_event = threading.Event()
+        self.done_event = threading.Event()
+        self.abort_flag = threading.Event()
+        self.result = None
+        self.error_message = None
+        self.error_type = None
+
+    def run(self):
+        try:
+            self._execute_extraction()
+            if self.result is None:
+                self.result = "error"
+                self.error_message = "Job returned without setting outcome"
+                self.error_type = "retryable"
+        except Exception as e:
+            self.result = "error"
+            self.error_message = str(e)
+            self.error_type = "retryable"
         finally:
-            for f in future_to_task:
-                f.cancel()
+            _clear_extraction_in_progress(self.session_id)
+            self.done_event.set()
+            self.executor.shutdown(wait=False)
 
-    if cancelled:
-        yield {"status": "cancelled"}
-        return
+    def _run_assembly(self, meta):
+        from table_extractor.html_assembler import write_page_files
+        output_dir = self.output_dir
+        fragments_dir = self.sm.get_extraction_fragments_dir(self.session_id)
+        session_output_dir = os.path.join(output_dir, self.session_id)
+        os.makedirs(session_output_dir, exist_ok=True)
+        _remove_output_marker(self.session_id, output_dir)
 
-    yield {
-        "status": "progress",
-        "page": total_tasks,
-        "totalPages": total_tasks,
-        "log": "Assembling final HTML document...",
-    }
+        pages_data = []
+        for page_idx, page_info in enumerate(meta.get("pages", [])):
+            page_tasks = [
+                t for t in meta.get("extraction_tasks", [])
+                if t["page_idx"] == page_idx and t["extraction_status"] == "extracted"
+            ]
+            fragments = []
+            for task in page_tasks:
+                frag_path = os.path.join(fragments_dir, os.path.basename(task["fragment_path"]))
+                with open(frag_path, "r", encoding="utf-8") as f:
+                    fragments.append(f.read())
+            pages_data.append({"html": "\n".join(fragments)})
 
-    pages_data = []
-    for page_idx, page_info in enumerate(pages):
-        classification = _get_classification(page_info)
-        crops = _get_sorted_crops(page_info)
-        is_complex = classification == "Complex"
+        session_files = meta.get("files", [])
+        title = session_files[0] if session_files else f"Session {self.session_id[:8]}"
+        write_page_files(self.session_id, pages_data, title, output_root=output_dir)
+        _write_complete_marker(session_output_dir)
 
-        if not is_complex or len(crops) == 0:
-            pages_data.append({"html": results.get((page_idx, None), "")})
-        else:
-            parts = []
-            for crop_idx in range(len(crops)):
-                fragment = results.get((page_idx, crop_idx), "")
-                if fragment:
-                    parts.append(fragment)
-            pages_data.append({"html": "\n".join(parts)})
+    def _execute_extraction(self):
+        with self.sm.metadata_lock(self.session_id):
+            meta = self.sm.load_meta(self.session_id)
+            desired = derive_required_tasks(meta)
+            reconcile_tasks(meta, desired, self.sm.get_extraction_fragments_dir(self.session_id))
+            self.sm.save_meta_atomic(self.session_id, meta)
 
-    out_dir = output_root or os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "..", "crop_app", "static", "extracted",
-    )
-    write_page_files(session_id, pages_data, title, output_root=out_dir)
+        meta = self.sm.load_meta(self.session_id)
+        tasks = meta.get("extraction_tasks", [])
 
-    yield {
-        "status": "done",
-        "page_files": [f"page-{i}.html" for i in range(len(pages_data))],
-        "index": "index.html",
-    }
+        def _eligible(task):
+            if task["extraction_status"] == "extracted":
+                return False
+            if not self.retry_nonretryable and task["extraction_status"] == "failed" \
+               and task.get("extraction_error_type") in ("auth", "credits"):
+                return False
+            return True
+
+        tasks_to_run = [t for t in tasks if _eligible(t)]
+
+        if not tasks_to_run:
+            failed = [t for t in tasks if t["extraction_status"] == "failed"]
+            if failed:
+                terminal = next((t for t in failed if t["extraction_error_type"] in ("auth", "credits")), failed[0])
+                self.result = "error"
+                self.error_message = terminal.get("extraction_error") or "Tasks failed"
+                self.error_type = terminal.get("extraction_error_type") or "retryable"
+                return
+            self._run_assembly(meta)
+            self.result = "done"
+            return
+
+        max_workers = min(self.max_workers, len(tasks_to_run))
+        if max_workers <= 0:
+            self.result = "error"
+            self.error_message = "No eligible tasks"
+            self.error_type = "retryable"
+            return
+
+        semaphore = threading.Semaphore(max_workers)
+        futures = []
+        for task in tasks_to_run:
+            if self.cancel_event.is_set() or self.abort_flag.is_set():
+                break
+            semaphore.acquire()
+            if self.cancel_event.is_set() or self.abort_flag.is_set():
+                semaphore.release()
+                break
+            future = self.executor.submit(self._extract_task, task, semaphore)
+            futures.append(future)
+
+        for future in futures:
+            try:
+                future.result()
+            except PipelineCallError:
+                pass
+            except Exception:
+                pass
+
+        if self.cancel_event.is_set() and not self.abort_flag.is_set():
+            self.result = "cancelled"
+            return
+
+        meta = self.sm.load_meta(self.session_id)
+        failed = [t for t in meta["extraction_tasks"] if t["extraction_status"] == "failed"]
+        if failed:
+            auth_fail = [t for t in failed if t["extraction_error_type"] in ("auth", "credits")]
+            if auth_fail:
+                self.result = "error"
+                self.error_message = auth_fail[0]["extraction_error"]
+                self.error_type = auth_fail[0]["extraction_error_type"]
+            else:
+                self.result = "error"
+                self.error_message = f"{len(failed)} task(s) failed"
+                self.error_type = failed[0]["extraction_error_type"] or "retryable"
+            return
+
+        self._run_assembly(meta)
+        self.result = "done"
+
+    def _extract_task(self, task, semaphore):
+        try:
+            meta = self.sm.load_meta(self.session_id)
+            page_info = meta["pages"][task["page_idx"]]
+            if task["kind"] == "page":
+                page_path = os.path.join(self.page_dir, page_info["path"])
+                with Image.open(page_path) as img:
+                    crop_img = img.copy()
+            else:
+                crop_path = os.path.join(self.crop_root, self.session_id, task["crop_filename"])
+                with Image.open(crop_path) as img:
+                    crop_img = img.copy()
+
+            html_fragment = extract_crop_as_html(crop_img, self.model)
+            fragments_dir = self.sm.get_extraction_fragments_dir(self.session_id)
+            fragment_path = os.path.join(fragments_dir, f"{task['task_id']}.html")
+            _write_file_atomic(fragment_path, html_fragment)
+
+            with self.sm.metadata_lock(self.session_id):
+                meta = self.sm.load_meta(self.session_id)
+                for t in meta.get("extraction_tasks", []):
+                    if t["task_id"] == task["task_id"]:
+                        t["extraction_status"] = "extracted"
+                        t["fragment_path"] = f"extraction_fragments/{task['task_id']}.html"
+                        t["extraction_error"] = None
+                        t["extraction_error_type"] = None
+                self.sm.save_meta_atomic(self.session_id, meta)
+
+        except PipelineCallError as e:
+            with self.sm.metadata_lock(self.session_id):
+                meta = self.sm.load_meta(self.session_id)
+                for t in meta.get("extraction_tasks", []):
+                    if t["task_id"] == task["task_id"]:
+                        t["extraction_status"] = "failed"
+                        t["extraction_error"] = e.message
+                        t["extraction_error_type"] = e.error_type
+                self.sm.save_meta_atomic(self.session_id, meta)
+            if e.error_type in ("auth", "credits"):
+                self.abort_flag.set()
+
+        except Exception as e:
+            with self.sm.metadata_lock(self.session_id):
+                meta = self.sm.load_meta(self.session_id)
+                for t in meta.get("extraction_tasks", []):
+                    if t["task_id"] == task["task_id"]:
+                        t["extraction_status"] = "failed"
+                        t["extraction_error"] = str(e)
+                        t["extraction_error_type"] = "retryable"
+                self.sm.save_meta_atomic(self.session_id, meta)
+
+        finally:
+            semaphore.release()
+
+
+def _write_file_atomic(path: str, content: str) -> None:
+    fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".html.tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+# --- Job registry ---
+_active_jobs = {}
+_jobs_lock = threading.Lock()
+
+
+def _get_active_job(session_id):
+    with _jobs_lock:
+        return _active_jobs.get(session_id)
+
+
+def _start_extraction_job(session_id, sm, crop_root, page_dir, output_dir,
+                          model, max_workers=4, retry_nonretryable=False):
+    """Create and start a new extraction job. Atomically registers in-progress state."""
+    with _jobs_lock:
+        existing = _active_jobs.get(session_id)
+        if existing and not existing.done_event.is_set():
+            raise ExtractionInProgressError("Job already running for session")
+        job = ExtractionJob(
+            session_id=session_id, sm=sm, crop_root=crop_root, page_dir=page_dir,
+            output_dir=output_dir, model=model, max_workers=max_workers,
+            retry_nonretryable=retry_nonretryable,
+        )
+        _active_jobs[session_id] = job
+        _set_extraction_in_progress(session_id)
+        thread = threading.Thread(target=job.run, name=f"extract-{session_id[:8]}", daemon=True)
+        thread.start()
+        return job
+
+
+def _cleanup_completed_jobs():
+    """Drop finished jobs from the registry so SSE observers read disk state."""
+    with _jobs_lock:
+        for sid in list(_active_jobs.keys()):
+            job = _active_jobs[sid]
+            if job.done_event.is_set():
+                del _active_jobs[sid]
 
 
 # --- Extraction-in-progress guard (module level) ---

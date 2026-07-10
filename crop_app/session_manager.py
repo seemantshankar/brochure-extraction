@@ -24,11 +24,8 @@ class SessionManager:
         return sid
 
     def save_meta(self, session_id: str, data: dict) -> None:
-        session_dir = os.path.join(self.upload_dir, session_id)
-        os.makedirs(session_dir, exist_ok=True)
-        meta_path = os.path.join(session_dir, "meta.json")
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        with self.metadata_lock(session_id):
+            self.save_meta_atomic(session_id, data)
 
     def metadata_lock(self, session_id):
         """Get (creating if needed) the per-session threading.Lock for meta writes."""
@@ -52,6 +49,10 @@ class SessionManager:
                 json.dump(meta, f, indent=2, ensure_ascii=False)
             os.replace(tmp_path, meta_path)
         except BaseException:
+            try:
+                os.close(fd)  # in case fdopen didn't close it
+            except OSError:
+                pass
             try:
                 os.unlink(tmp_path)
             except OSError:

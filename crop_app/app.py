@@ -2,12 +2,10 @@
 from __future__ import annotations
 import os
 import sys
-import json
 import shutil
 import logging
 import datetime
-import threading
-from flask import Flask, request, jsonify, redirect, url_for, send_file, render_template, Response
+from flask import Flask, request, jsonify, redirect, send_file, render_template, Response
 
 logger = logging.getLogger(__name__)
 
@@ -28,13 +26,34 @@ if os.path.exists(env_path):
                 v = v.strip().strip('"').strip("'")
                 os.environ.setdefault(k, v)
 
-from werkzeug.utils import secure_filename
-from session_manager import SessionManager
-from crop_manager import CropManager
-from pdf_converter import pdf_to_pages, upgrade_page_to_hires
-from llm import analyze_page
+from werkzeug.utils import secure_filename  # noqa: E402
+from session_manager import SessionManager  # noqa: E402
+from crop_manager import CropManager  # noqa: E402
+from pdf_converter import pdf_to_pages, upgrade_page_to_hires  # noqa: E402
+from llm import analyze_page  # noqa: E402
 
 UPLOAD_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
+
+_EMBED_CSS_INJECT = """\
+.embedded-review .page-nav { display: none; }
+.embedded-review .document-canvas { width: auto; margin-left: 0; padding: 16px; overflow: visible; }
+.embedded-review .page { width: 100%; max-width: none; margin: 0; padding: 0; box-shadow: none; border-radius: 0; }
+.embedded-review .page-label { display: none; }
+.page, .page * { min-width: 0; }
+p, li, dd, dt, h1, h2, h3, h4, h5, h6, th, td { overflow-wrap: anywhere; word-break: break-word; }
+.table-scroll-wrap { max-width: 100%; }
+table { table-layout: fixed; }
+"""
+
+_EMBED_JS_INJECT = """\
+<script>
+var _sp = new URLSearchParams(window.location.search);
+if (_sp.get("embed") === "1") {
+  document.documentElement.classList.add("embedded-review");
+  document.body.classList.add("embedded-review");
+}
+</script>
+"""
 
 
 def format_datetime(unix_ts):
@@ -79,16 +98,13 @@ def create_app():
     app.session_manager = sm
 
     from table_extractor.html_extractor import (
-        ExtractionJob,
         _start_extraction_job,
         _get_active_job,
         _output_complete,
         _remove_output_marker,
         set_output_root,
-        derive_required_tasks,
         on_crop_mutation,
         _is_extraction_in_progress,
-        reconcile_tasks,
         ExtractionInProgressError,
         normalize_legacy_meta,
     )
@@ -788,6 +804,14 @@ def create_app():
         if not out_path.startswith(session_dir + os.sep):
             return "Page not found", 404
         if os.path.exists(out_path):
+            embed_mode = request.args.get("embed") == "1"
+            if embed_mode:
+                with open(out_path, "r", encoding="utf-8") as _f:
+                    html_content = _f.read()
+                if ".embedded-review" not in html_content:
+                    inject = "<style>" + _EMBED_CSS_INJECT + "</style>\n" + _EMBED_JS_INJECT
+                    html_content = html_content.replace("</head>", inject + "\n</head>")
+                return Response(html_content, mimetype="text/html")
             return send_file(out_path, mimetype="text/html")
 
         return "Page not found", 404

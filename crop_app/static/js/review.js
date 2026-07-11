@@ -19,10 +19,37 @@
     zoomDisplay: zoomDisplay,
   });
 
+  var errPanel = document.getElementById("extraction-error");
+  var currentPageIndex = initialPage;
+
+  function showExtracted() {
+    errPanel.hidden = true;
+    frame.style.display = "";
+  }
+
+  function showExtractedError() {
+    errPanel.hidden = false;
+    frame.style.display = "none";
+  }
+
+  function loadExtractedPage(index) {
+    currentPageIndex = index;
+    var url = "/extracted/" + encodeURIComponent(sessionId) + "/page-" + index + ".html?embed=1";
+    fetch(url)
+      .then(function (resp) {
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        frame.src = url;
+        showExtracted();
+      })
+      .catch(function () {
+        showExtractedError();
+      });
+  }
+
   function selectPage(index, push) {
     if (push === undefined) push = true;
     viewer.setImage("/pages/" + encodeURIComponent(sessionId) + "/" + pages[index].path);
-    frame.src = "/extracted/" + encodeURIComponent(sessionId) + "/page-" + index + ".html?embed=1";
+    loadExtractedPage(index);
     if (push) history.pushState({ page: index }, "", "?page=" + index);
     updateThumbnails(index);
   }
@@ -107,7 +134,8 @@
 
   document.getElementById("review-zoom-in").addEventListener("click", function () { viewer.zoomIn(); });
   document.getElementById("review-zoom-out").addEventListener("click", function () { viewer.zoomOut(); });
-  document.getElementById("review-reset").addEventListener("click", function () { viewer.fitToViewport(); });
+  document.getElementById("review-reset").addEventListener("click", function () { viewer.resize({ refit: true }); });
+  document.getElementById("extraction-retry-btn").addEventListener("click", function () { loadExtractedPage(currentPageIndex); });
 
   var savedSplit = localStorage.getItem("extraction-review-split");
   if (savedSplit !== null) {

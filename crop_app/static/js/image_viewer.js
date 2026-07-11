@@ -250,12 +250,7 @@ window.ImageViewer.create = function createImageViewer(options) {
   canvas.addEventListener("mouseleave", function() { state.canvasFocused = false; });
 
   var ro = new ResizeObserver(function() {
-    resizeCanvas();
-    if (state.image) {
-      fitToViewport();
-      updateZoomDisplay();
-      render();
-    }
+    resize();
   });
   ro.observe(container);
 

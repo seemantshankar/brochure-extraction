@@ -46,3 +46,25 @@ def test_review_template_has_viewer_divider_and_editable_iframe():
     assert 'id="extracted-frame"' in template
     assert '/static/js/image_viewer.js' in template
     assert '/static/js/review.js' in template
+
+
+def test_review_template_has_workspace_heading_before_thumbnails():
+    template = open("crop_app/templates/review.html", encoding="utf-8").read()
+    assert 'class="review-header"' in template
+    assert "Extraction Review" in template
+    assert template.index("review-header") < template.index("review-thumbnails")
+
+
+def test_review_template_has_iframe_error_state_with_retry():
+    template = open("crop_app/templates/review.html", encoding="utf-8").read()
+    assert 'id="extraction-error"' in template
+    assert 'id="extraction-retry-btn"' in template
+    assert 'class="frame-container"' in template
+
+
+def test_review_js_has_iframe_error_handling_and_retry():
+    script = open("crop_app/static/js/review.js", encoding="utf-8").read()
+    assert "extraction-error" in script
+    assert "extraction-retry-btn" in script
+    assert "fetch(" in script
+    assert "loadExtractedPage" in script

@@ -13,7 +13,7 @@ document.addEventListener("DOMContentLoaded", function () {
   var errorMsg = document.getElementById("error-msg");
   var openBtn = document.getElementById("open-btn");
 
-  openBtn.href = "/extracted/" + sessionId + "/extraction.html";
+  openBtn.href = "/review/" + sessionId + "?page=0";
 
   function setProgress(pct) {
     pct = Math.max(0, Math.min(100, pct));

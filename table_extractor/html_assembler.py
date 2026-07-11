@@ -129,7 +129,7 @@ _EDIT_CSS = """
 .inline-edit-input:focus { outline: 2px solid #4f8cff; outline-offset: 1px; }
 [contenteditable="true"]:focus { outline: 2px solid #4f8cff; outline-offset: 1px; }
 .edited { background: #fff7e6; }
-.save-btn { margin: 8px; padding: 8px 16px; background: #4f8cff; color: #fff; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; }
+.save-btn { position: fixed; bottom: 24px; right: 24px; padding: 8px 16px; background: #4f8cff; color: #fff; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; z-index: 1000; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
 .save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .save-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #16a34a; color: #fff; padding: 10px 18px; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); animation: fadeInOut 2.5s ease forwards; }
 .save-error { background: #dc2626; }

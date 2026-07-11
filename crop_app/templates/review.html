@@ -6,6 +6,10 @@
 </head>
 <body class="review-body">
     <main class="review-workspace">
+        <header class="review-header">
+            <h1>Extraction Review</h1>
+            <p>Compare each original page to its editable extraction and save any corrections.</p>
+        </header>
         <nav id="review-thumbnails" aria-label="Brochure pages"></nav>
         <div id="review-split" class="review-split">
             <section class="review-source">
@@ -28,7 +32,13 @@
                  aria-valuemin="25" aria-valuemax="75" aria-valuenow="50"></div>
             <section class="review-extraction">
                 <div class="review-toolbar">Extracted HTML</div>
-                <iframe id="extracted-frame" title="Editable extracted HTML"></iframe>
+                <div id="extraction-frame-container" class="frame-container">
+                    <iframe id="extracted-frame" title="Editable extracted HTML"></iframe>
+                    <div id="extraction-error" class="iframe-error" hidden>
+                        <p>Failed to load the extracted page.</p>
+                        <button id="extraction-retry-btn" type="button">Retry</button>
+                    </div>
+                </div>
             </section>
         </div>
     </main>

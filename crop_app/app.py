@@ -56,6 +56,18 @@ if (_sp.get("embed") === "1") {
 """
 
 
+def _upgrade_legacy_inline_editor(html_content: str) -> str:
+    """Make previously generated reviewer pages use wrapping textarea controls."""
+    html_content = html_content.replace(
+        'document.createElement("input")', 'document.createElement("textarea")'
+    )
+    html_content = html_content.replace('input.type = "text";\n', 'input.rows = 1;\n')
+    html_content = html_content.replace(
+        'input.setAttribute("value", textNodes[0].nodeValue);\n', ''
+    )
+    return html_content.replace('input.inline-edit-input', 'textarea.inline-edit-input')
+
+
 def format_datetime(unix_ts):
     """Format a Unix timestamp as a human-readable date/time string."""
     return datetime.datetime.fromtimestamp(unix_ts).strftime("%b %d, %Y %H:%M")
@@ -323,8 +335,32 @@ def create_app():
             }
             next_id = meta.get("next_crop_id", 0)
             newly_saved = []
+            updated_task_ids = set()
             for item in data["crops"]:
                 bbox = item["bbox"]
+                requested_filename = item.get("filename")
+                if requested_filename:
+                    existing_record = next(
+                        (
+                            crop for crop in existing
+                            if (crop.get("filename") or crop.get("path")) == requested_filename
+                        ),
+                        None,
+                    )
+                    if existing_record is None:
+                        return jsonify({"error": "Crop not found in page metadata"}), 404
+                    crop_path = cm.save_crop(
+                        session_id, page_path, bbox, filename=requested_filename
+                    )
+                    crop_filename = os.path.basename(crop_path)
+                    existing_record.update({
+                        "path": crop_filename,
+                        "filename": crop_filename,
+                        "bbox": bbox,
+                    })
+                    newly_saved.append(existing_record)
+                    updated_task_ids.add(os.path.splitext(crop_filename)[0])
+                    continue
                 key = (round(bbox[0], 6), round(bbox[1], 6),
                        round(bbox[2], 6), round(bbox[3], 6))
                 if key in existing_keys:
@@ -340,6 +376,20 @@ def create_app():
             meta["next_crop_id"] = next_id
             if "draft" in page_info:
                 del page_info["draft"]
+            for task in meta.get("extraction_tasks", []):
+                if task.get("task_id") not in updated_task_ids:
+                    continue
+                frag_path = task.get("fragment_path")
+                if frag_path:
+                    full_path = os.path.join(fragments_dir, os.path.basename(frag_path))
+                    if os.path.exists(full_path):
+                        os.unlink(full_path)
+                task.update({
+                    "extraction_status": "pending",
+                    "extraction_error": None,
+                    "extraction_error_type": None,
+                    "fragment_path": None,
+                })
             on_crop_mutation(meta, _sm, session_id, app.config["EXTRACTED_DIR"])
             _sm.save_meta_atomic(session_id, meta)
         return jsonify({"crops": existing, "added": newly_saved, "page_index": page_index})
@@ -811,6 +861,7 @@ def create_app():
                 if ".embedded-review" not in html_content:
                     inject = "<style>" + _EMBED_CSS_INJECT + "</style>\n" + _EMBED_JS_INJECT
                     html_content = html_content.replace("</head>", inject + "\n</head>")
+                html_content = _upgrade_legacy_inline_editor(html_content)
                 return Response(html_content, mimetype="text/html")
             return send_file(out_path, mimetype="text/html")
 

@@ -53,7 +53,7 @@ document.addEventListener("DOMContentLoaded", function () {
       saveButton.textContent = "Saving...";
       var saveRoot = document.documentElement.cloneNode(true);
       saveRoot.querySelectorAll(".save-btn, .save-toast, .save-error").forEach(function (n) { n.remove(); });
-      saveRoot.querySelectorAll("input.inline-edit-input").forEach(function (inp) {
+      saveRoot.querySelectorAll("textarea.inline-edit-input").forEach(function (inp) {
         inp.parentNode.replaceChild(document.createTextNode(inp.value != null ? inp.value : ""), inp);
       });
       saveRoot.querySelectorAll("[contenteditable]").forEach(function (el) {
@@ -112,9 +112,8 @@ document.addEventListener("DOMContentLoaded", function () {
       if (textNodes.length === 0) return;
 
       if (textNodes.length === 1 && el.children.length === 0) {
-        var input = document.createElement("input");
-        input.type = "text";
-        input.setAttribute("value", textNodes[0].nodeValue);
+        var input = document.createElement("textarea");
+        input.rows = 1;
         input.value = textNodes[0].nodeValue;
         input.className = "inline-edit-input";
         textNodes[0].parentNode.replaceChild(input, textNodes[0]);

@@ -31,3 +31,15 @@ def test_edit_script_detects_embedded_mode_without_changing_save_path():
     assert 'searchParams.get("embed") === "1"' in js
     assert 'classList.add("embedded-review")' in js
     assert '"/save-page/"' in js
+
+
+def test_edit_js_uses_wrapping_textareas_for_leaf_text():
+    """Leaf paragraphs must not be replaced by single-line inputs."""
+    js_path = os.path.join(
+        os.path.dirname(__file__), "..", "templates", "output_page_edit.js"
+    )
+    with open(js_path, "r", encoding="utf-8") as f:
+        js = f.read()
+
+    assert 'document.createElement("textarea")' in js
+    assert 'querySelectorAll("textarea.inline-edit-input")' in js

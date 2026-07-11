@@ -125,7 +125,7 @@ def assemble_full_document(pages_data: list, title: str = "Brochure Extraction")
 
 
 _EDIT_CSS = """
-.inline-edit-input { border: 1px solid #4f8cff; border-radius: 4px; padding: 2px 4px; font: inherit; width: 100%; box-sizing: border-box; }
+.inline-edit-input { border: 1px solid #4f8cff; border-radius: 4px; padding: 2px 4px; font: inherit; width: 100%; box-sizing: border-box; resize: vertical; white-space: pre-wrap; }
 .inline-edit-input:focus { outline: 2px solid #4f8cff; outline-offset: 1px; }
 [contenteditable="true"]:focus { outline: 2px solid #4f8cff; outline-offset: 1px; }
 .edited { background: #fff7e6; }

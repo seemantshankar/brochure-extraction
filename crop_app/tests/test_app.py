@@ -139,6 +139,32 @@ def test_save_page_endpoint(isolated_client, tmp_path):
         assert f.read() == "<p>edited</p>"
 
 
+def test_embedded_page_upgrades_legacy_single_line_editor(isolated_client, tmp_path):
+    """Reviewer rendering upgrades existing pages to wrapping textarea edits."""
+    app, client = isolated_client
+    extracted_dir = tmp_path / "extracted"
+    app.config["EXTRACTED_DIR"] = str(extracted_dir)
+    sid = app.session_manager.create_session()
+    app.session_manager.save_meta(sid, {"pages": [{"path": "page_000.png"}]})
+    session_dir = extracted_dir / sid
+    os.makedirs(session_dir, exist_ok=True)
+    (session_dir / ".complete").write_text("", encoding="utf-8")
+    (session_dir / "page-0.html").write_text(
+        '<script>var input = document.createElement("input");\n'
+        'input.type = "text";\n'
+        'saveRoot.querySelectorAll("input.inline-edit-input")</script>',
+        encoding="utf-8",
+    )
+
+    response = client.get(f"/extracted/{sid}/page-0.html?embed=1")
+
+    assert response.status_code == 200
+    page = response.data.decode("utf-8")
+    assert 'document.createElement("textarea")' in page
+    assert 'querySelectorAll("textarea.inline-edit-input")' in page
+    assert 'input.type = "text"' not in page
+
+
 def test_save_page_endpoint_rejects_empty_body(isolated_client, tmp_path):
     """Save endpoint rejects empty request bodies."""
     app, client = isolated_client
@@ -223,4 +249,3 @@ def test_path_traversal_and_prefix_bypass(isolated_client, tmp_path):
         assert resp_save[1] == 400
         assert resp_save[0].get_json()["status"] == "error"
         assert "Invalid session id" in resp_save[0].get_json()["message"]
-

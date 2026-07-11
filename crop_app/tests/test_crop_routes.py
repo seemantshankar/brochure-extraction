@@ -61,6 +61,50 @@ def test_commit_updates_meta(client_with_session):
     assert len(meta["pages"][0]["crops"]) == 1
 
 
+def test_commit_replaces_existing_crop_when_filename_is_supplied(client_with_session):
+    client, sid = client_with_session
+    sm = client.application.session_manager
+    first = client.post(
+        f"/commit/{sid}",
+        json={"page_index": 0, "crops": [{"bbox": [0, 0, 1, 1]}]},
+    ).get_json()["crops"][0]
+    fragments_dir = sm.get_extraction_fragments_dir(sid)
+    fragment_path = os.path.join(fragments_dir, "crop_000.html")
+    with open(fragment_path, "w") as f:
+        f.write("<p>old large crop</p>")
+    meta = sm.load_meta(sid)
+    meta["extraction_tasks"] = [{
+        "task_id": "crop_000", "page_idx": 0, "kind": "crop",
+        "crop_filename": first["filename"], "image_source": "crop",
+        "extraction_status": "extracted", "extraction_error": None,
+        "extraction_error_type": None,
+        "fragment_path": "extraction_fragments/crop_000.html",
+    }]
+    sm.save_meta_atomic(sid, meta)
+
+    response = client.post(
+        f"/commit/{sid}",
+        json={
+            "page_index": 0,
+            "crops": [
+                {"bbox": [0, 0, 0.5, 1], "filename": first["filename"]},
+                {"bbox": [0.5, 0, 1, 1]},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    crops = client.application.session_manager.load_meta(sid)["pages"][0]["crops"]
+    assert len(crops) == 2
+    assert crops[0]["filename"] == first["filename"]
+    assert crops[0]["bbox"] == [0, 0, 0.5, 1]
+    assert {crop["filename"] for crop in crops} == {first["filename"], "crop_001.png"}
+    assert not os.path.exists(fragment_path)
+    task = next(t for t in sm.load_meta(sid)["extraction_tasks"] if t["task_id"] == "crop_000")
+    assert task["extraction_status"] == "pending"
+    assert task["fragment_path"] is None
+
+
 def test_trim_endpoint(client_with_session):
     client, sid = client_with_session
     bboxes = [{"bbox": [0.0, 0.0, 1.0, 1.0]}]
@@ -244,6 +288,4 @@ def test_delete_crop_realpath_containment_checks(client_with_session):
         content_type="application/json",
     )
     assert resp2.status_code == 403
-
-
 

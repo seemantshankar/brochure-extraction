@@ -21,6 +21,7 @@
 
   var errPanel = document.getElementById("extraction-error");
   var currentPageIndex = initialPage;
+  var loadToken = 0;
 
   function showExtracted() {
     errPanel.hidden = true;
@@ -34,14 +35,17 @@
 
   function loadExtractedPage(index) {
     currentPageIndex = index;
+    var token = ++loadToken;
     var url = "/extracted/" + encodeURIComponent(sessionId) + "/page-" + index + ".html?embed=1";
     fetch(url)
       .then(function (resp) {
+        if (token !== loadToken) return;
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         frame.src = url;
         showExtracted();
       })
       .catch(function () {
+        if (token !== loadToken) return;
         showExtractedError();
       });
   }

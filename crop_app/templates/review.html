@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Review - {{ session_id }}</title>
+</head>
+<body>
+    <canvas id="review-canvas"></canvas>
+    <script>
+        const config = {
+            "sessionId": "{{ session_id }}",
+            "initialPage": {{ initial_page }},
+            "pages": {{ pages | tojson }}
+        };
+    </script>
+</body>
+</html>

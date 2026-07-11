@@ -98,3 +98,29 @@ def test_extracted_html_serving_requires_complete_marker(client_ready_session):
     client, sid, sm = client_ready_session
     resp = client.get(f"/extracted/{sid}/extraction.html")
     assert resp.status_code == 404
+
+
+def _mark_extraction_complete(app, sid):
+    output = os.path.join(app.config["EXTRACTED_DIR"], sid)
+    os.makedirs(output, exist_ok=True)
+    open(os.path.join(output, ".complete"), "w", encoding="utf-8").close()
+
+
+def test_review_workspace_requires_completed_extraction(client_ready_session):
+    client, sid, _ = client_ready_session
+    assert client.get(f"/review/{sid}").status_code == 404
+
+
+def test_review_workspace_renders_current_page(client_ready_session):
+    client, sid, _ = client_ready_session
+    _mark_extraction_complete(client.application, sid)
+    response = client.get(f"/review/{sid}?page=0")
+    assert response.status_code == 200
+    assert b"review-canvas" in response.data
+    assert b'"initialPage": 0' in response.data
+
+
+def test_review_workspace_rejects_out_of_range_page(client_ready_session):
+    client, sid, _ = client_ready_session
+    _mark_extraction_complete(client.application, sid)
+    assert client.get(f"/review/{sid}?page=1").status_code == 404

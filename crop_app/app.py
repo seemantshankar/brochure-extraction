@@ -568,7 +568,7 @@ def create_app():
         if not analyzed:
             return render_template("error.html", message="Please analyze all pages before extracting HTML."), 400
         if _output_complete(session_id):
-            return redirect(f"/extracted/{session_id}/extraction.html")
+            return redirect(f"/review/{session_id}?page=0")
         return render_template("extract_progress.html", session_id=session_id)
 
     @app.route("/extract-html/<session_id>", methods=["POST"])
@@ -791,6 +791,20 @@ def create_app():
             return send_file(out_path, mimetype="text/html")
 
         return "Page not found", 404
+
+    @app.route("/review/<session_id>", methods=["GET"])
+    def review_workspace(session_id):
+        _sm = app.session_manager
+        if not _sm.session_exists(session_id) or not _output_complete(session_id):
+            return "Extraction not found. Please run extraction first.", 404
+        meta = _sm.load_meta(session_id)
+        page_idx = request.args.get("page", 0, type=int)
+        pages = meta.get("pages", [])
+        if page_idx is None or page_idx < 0 or page_idx >= len(pages):
+            return "Page not found", 404
+        return render_template("review.html", session_id=session_id,
+                               pages=[{"path": page["path"]} for page in pages],
+                               initial_page=page_idx)
 
     return app
 

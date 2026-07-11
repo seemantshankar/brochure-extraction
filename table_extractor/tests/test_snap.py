@@ -1,8 +1,7 @@
-import pytest
 from unittest.mock import MagicMock
 from PIL import Image
 from table_extractor.schemas import Region, RegionType
-from table_extractor.snap import snap_bbox, snap_regions, get_ocr_engine, get_normalized_ocr_boxes
+from table_extractor.snap import snap_bbox, snap_regions, get_normalized_ocr_boxes
 
 def test_snap_bbox_no_ocr_boxes():
     bbox = [100.0, 100.0, 200.0, 200.0]

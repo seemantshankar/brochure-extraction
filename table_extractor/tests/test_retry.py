@@ -1,13 +1,10 @@
-import time
 from unittest.mock import MagicMock
 
 import pytest
 from openai import AuthenticationError, APIStatusError
 
 from table_extractor.retry import (
-    PipelineCallError,
     RetryableError,
-    NonRetryableError,
     AuthError,
     CreditsExhaustedError,
     BlankResponseError,

@@ -162,7 +162,8 @@ def test_per_page_html_includes_embedded_mode_and_wrapping_rules():
 def test_index_page_has_page_grid():
     """The generated index page links to each page."""
     from table_extractor.html_assembler import write_page_files
-    import tempfile, os
+    import tempfile
+    import os
     with tempfile.TemporaryDirectory() as tmp:
         write_page_files("idx-test", [{"html": "<p>A</p>"}, {"html": "<p>B</p>"}], "Idx", output_root=tmp)
         with open(os.path.join(tmp, "idx-test", "index.html"), "r", encoding="utf-8") as f:

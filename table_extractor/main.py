@@ -1,7 +1,6 @@
 import argparse
 import json
 import os
-from PIL import Image
 
 def load_env():
     # Find .env in project root (parent directory of table_extractor)
@@ -29,7 +28,7 @@ def load_env():
 
 load_env()
 
-from table_extractor import ingest, detect, extract, reconcile, render, snap
+from table_extractor import ingest, detect, extract, reconcile, render, snap  # noqa: E402
 
 # Model selection — all loaded from .env; no hardcoded defaults
 DEFAULT_DETECTION_MODEL = os.environ.get("STRUCTURE_DETECTION_MODEL_ID")
@@ -170,12 +169,12 @@ def run_pipeline(
     ext_usage = extract.get_total_usage()
     print("\n" + "="*40)
     print("TOTAL PIPELINE USAGE METRICS:")
-    print(f"  Detection API Calls:")
+    print("  Detection API Calls:")
     print(f"    Prompt Tokens:     {det_usage.get('prompt_tokens', 0)}")
     print(f"    Completion Tokens: {det_usage.get('completion_tokens', 0)}")
     print(f"    Estimated Cost:    ${det_usage.get('cost_usd', 0.0):.6f}")
     if not detect_only:
-        print(f"  Extraction/Verification API Calls:")
+        print("  Extraction/Verification API Calls:")
         print(f"    Prompt Tokens:     {ext_usage.get('prompt_tokens', 0)}")
         print(f"    Completion Tokens: {ext_usage.get('completion_tokens', 0)}")
         print(f"    Estimated Cost:    ${ext_usage.get('cost_usd', 0.0):.6f}")

@@ -1,4 +1,3 @@
-import pytest
 from table_extractor.schemas import Region, RegionType
 from table_extractor.detect import check_overlaps
 

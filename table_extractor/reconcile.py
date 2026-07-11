@@ -2,7 +2,7 @@ import json
 import random
 import re
 from PIL import Image
-from table_extractor.schemas import Region, RegionType, ExtractedContent
+from table_extractor.schemas import Region, RegionType
 from table_extractor.extract import extract_content
 
 def flatten_columns(columns: list) -> list[str]:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 import os
 import sys
-import json
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -11,7 +10,6 @@ from unittest.mock import patch
 from PIL import Image
 
 from table_extractor.html_extractor import (
-    ExtractionJob,
     _start_extraction_job,
     _get_active_job,
     _cleanup_completed_jobs,
@@ -78,7 +76,6 @@ def test_job_extracts_all_and_writes_complete(tmp_path):
         job = _start_extraction_job(sid, sm, str(tmp_path / "crops"),
                                     str(tmp_path / sid / "pages"),
                                     str(tmp_path / "out"), "m")
-        import time
         job.done_event.wait(timeout=10)
     assert _output_complete(sid) is True
     out_dir = os.path.join(str(tmp_path / "out"), sid)
@@ -115,7 +112,6 @@ def test_job_resumes_skipping_extracted(tmp_path):
         job = _start_extraction_job(sid, sm, str(tmp_path / "crops"),
                                     str(tmp_path / sid / "pages"),
                                     str(tmp_path / "out"), "m")
-        import time
         job.done_event.wait(timeout=10)
     assert calls["n"] == 0  # skipped because already extracted
     out_dir = os.path.join(str(tmp_path / "out"), sid)
@@ -144,7 +140,6 @@ def test_duplicate_job_rejected(tmp_path):
             pytest.fail("expected RuntimeError")
         except RuntimeError as e:
             assert "already running" in str(e)
-    import time
     j = _get_active_job(sid)
     j.done_event.wait(timeout=10)
 
@@ -163,7 +158,6 @@ def test_cleanup_completed_jobs_removes_registry_entry(tmp_path):
         job = _start_extraction_job(sid, sm, str(tmp_path / "crops"),
                                     str(tmp_path / sid / "pages"),
                                     str(tmp_path / "out"), "m")
-        import time
         job.done_event.wait(timeout=10)
         _cleanup_completed_jobs()
         assert _get_active_job(sid) is None

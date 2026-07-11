@@ -43,7 +43,7 @@ def test_run_pipeline_orchestration(mocker, tmp_path):
     
     mock_refine_region_zoom = mocker.patch("table_extractor.detect.refine_region_zoom", side_effect=lambda img, r, model, force=False: r)
     
-    mock_crop_with_padding = mocker.patch("table_extractor.ingest.crop_with_padding", return_value=mock_img)
+    mocker.patch("table_extractor.ingest.crop_with_padding", return_value=mock_img)
     
     extracted_content = ExtractedContent(
         region_id="r0",
@@ -56,9 +56,9 @@ def test_run_pipeline_orchestration(mocker, tmp_path):
     
     mock_resolve_footnotes = mocker.patch("table_extractor.reconcile.resolve_footnotes")
     mock_self_consistency_check = mocker.patch("table_extractor.reconcile.self_consistency_check")
-    mock_to_markdown = mocker.patch("table_extractor.reconcile.to_markdown", return_value="## Mock Markdown Output")
+    mocker.patch("table_extractor.reconcile.to_markdown", return_value="## Mock Markdown Output")
     
-    mock_draw_overlay = mocker.patch("table_extractor.render.draw_overlay", return_value=mock_img)
+    mocker.patch("table_extractor.render.draw_overlay", return_value=mock_img)
     
     mocker.patch("table_extractor.detect.get_total_usage", return_value={"prompt_tokens": 10, "completion_tokens": 10, "cost_usd": 0.1})
     mocker.patch("table_extractor.extract.get_total_usage", return_value={"prompt_tokens": 10, "completion_tokens": 10, "cost_usd": 0.1})
@@ -135,7 +135,7 @@ def test_cli_refinement_method_parsing(mocker):
 
 def test_run_pipeline_refinement_none(mocker, tmp_path):
     mock_img = Image.new("RGB", (100, 100))
-    mock_load_and_prep = mocker.patch("table_extractor.ingest.load_and_prep", return_value=[mock_img])
+    mocker.patch("table_extractor.ingest.load_and_prep", return_value=[mock_img])
     
     region = Region(
         id="r0",
@@ -144,7 +144,7 @@ def test_run_pipeline_refinement_none(mocker, tmp_path):
         bbox=[0, 0, 1000, 1000],
         may_contain_subregions=True
     )
-    mock_detect_regions = mocker.patch("table_extractor.detect.detect_regions", return_value=[region])
+    mocker.patch("table_extractor.detect.detect_regions", return_value=[region])
     mock_detect_subregions = mocker.patch("table_extractor.detect.detect_subregions")
     mocker.patch("table_extractor.ingest.crop_with_padding", return_value=mock_img)
     
@@ -178,7 +178,7 @@ def test_run_pipeline_refinement_none(mocker, tmp_path):
 
 def test_run_pipeline_refinement_zoom_recursive(mocker, tmp_path):
     mock_img = Image.new("RGB", (100, 100))
-    mock_load_and_prep = mocker.patch("table_extractor.ingest.load_and_prep", return_value=[mock_img])
+    mocker.patch("table_extractor.ingest.load_and_prep", return_value=[mock_img])
     
     parent_region = Region(
         id="r0",
@@ -187,7 +187,7 @@ def test_run_pipeline_refinement_zoom_recursive(mocker, tmp_path):
         bbox=[0, 0, 1000, 1000],
         may_contain_subregions=True
     )
-    mock_detect_regions = mocker.patch("table_extractor.detect.detect_regions", return_value=[parent_region])
+    mocker.patch("table_extractor.detect.detect_regions", return_value=[parent_region])
     
     child_region = Region(
         id="r0_s0",
@@ -197,7 +197,7 @@ def test_run_pipeline_refinement_zoom_recursive(mocker, tmp_path):
         may_contain_subregions=False,
         depth=1
     )
-    mock_detect_subregions = mocker.patch("table_extractor.detect.detect_subregions", return_value=[child_region])
+    mocker.patch("table_extractor.detect.detect_subregions", return_value=[child_region])
     
     # We want refine_region_zoom to return a new region object to ensure we test replacement
     def dummy_refine(img, r, model, force=False):

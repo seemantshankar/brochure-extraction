@@ -1,9 +1,7 @@
 import os
 import pytest
 import sys
-import json
 import threading
-import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from session_manager import SessionManager

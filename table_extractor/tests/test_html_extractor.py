@@ -1,9 +1,6 @@
 """Tests for HTML extraction and prompt cleanup."""
 import os
 import sys
-import time
-from unittest.mock import patch
-from PIL import Image
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -106,7 +103,7 @@ class TestFDCleanupAndJobCleanup:
         with patch("table_extractor.html_extractor._cleanup_completed_jobs") as mock_cleanup, \
              patch("table_extractor.html_extractor.ExtractionJob") as mock_job_class, \
              patch("table_extractor.html_extractor._set_extraction_in_progress"), \
-             patch("threading.Thread") as mock_thread:
+             patch("threading.Thread"):
 
             mock_job = MagicMock()
             mock_job_class.return_value = mock_job

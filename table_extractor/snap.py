@@ -122,11 +122,9 @@ def snap_bbox(
             
             inter_w = max(0.0, inter_x1 - inter_x0)
             inter_h = max(0.0, inter_y1 - inter_y0)
-            inter_area = inter_w * inter_h
             
             text_w = tx1 - tx0
             text_h = ty1 - ty0
-            text_area = text_w * text_h
             
             # Calculate overlap ratios relative to the minimum of the text box and ORIGINAL region dimensions
             region_w = rx1_orig - rx0_orig

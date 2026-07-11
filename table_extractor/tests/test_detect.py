@@ -171,7 +171,7 @@ def test_detect_subregions_respects_max_depth(mocker):
     assert len(subregions[0].children) == 0
 
 def test_detect_usage_tracking(mocker):
-    from table_extractor.detect import get_total_usage, total_detection_usage
+    from table_extractor.detect import get_total_usage
     
     mock_client = mocker.patch("table_extractor.detect._client")
     

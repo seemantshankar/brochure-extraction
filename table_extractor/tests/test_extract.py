@@ -271,7 +271,7 @@ def test_extract_uses_cache(mocker, tmp_path):
         assert content1.table_json == content2.table_json
 
         # Force call: cache update, calls client again
-        content3 = extract_content(img, region, "test-model", force=True)
+        extract_content(img, region, "test-model", force=True)
         assert mock_client.chat.completions.create.call_count == 2
     finally:
         cache.CACHE_DIR = orig_dir

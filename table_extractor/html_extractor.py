@@ -1,14 +1,12 @@
-from __future__ import annotations
 """Extract HTML fragments from brochure crops using an LLM and assemble pages."""
+from __future__ import annotations
 import io
 import os
 import re
-import html
 import base64
 import logging
 import concurrent.futures
 import threading
-import weakref
 import tempfile
 import time
 import json
@@ -601,7 +599,6 @@ def reconcile_tasks(meta: dict, desired_tasks: list, fragments_dir: str) -> None
       upgrade to "extracted" and set fragment_path
     """
     existing_tasks = meta.get("extraction_tasks", [])
-    desired_ids = {t["task_id"] for t in desired_tasks}
     existing_by_id = {t["task_id"]: t for t in existing_tasks}
 
     final = []

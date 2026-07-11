@@ -1,4 +1,3 @@
-import pytest
 from PIL import Image
 from table_extractor.schemas import Region, RegionType, ExtractedContent
 from table_extractor.reconcile import resolve_footnotes, self_consistency_check, to_markdown
@@ -110,7 +109,7 @@ def test_self_consistency_check_mismatch(mocker):
 
 def test_self_consistency_check_api_error(mocker):
     # Mock extract_content to raise an error
-    mock_extract = mocker.patch("table_extractor.reconcile.extract_content", side_effect=RuntimeError("API Error"))
+    mocker.patch("table_extractor.reconcile.extract_content", side_effect=RuntimeError("API Error"))
     
     primary_content = ExtractedContent(
         region_id="r1", region_type=RegionType.BULLET_PANEL,

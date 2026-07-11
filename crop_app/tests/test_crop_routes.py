@@ -7,7 +7,6 @@ from PIL import Image
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app import create_app
 from session_manager import SessionManager
-from crop_manager import CropManager
 
 
 @pytest.fixture

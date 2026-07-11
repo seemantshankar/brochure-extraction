@@ -131,7 +131,7 @@ def retry_with_backoff(
                 delay = min(base_delay * (2 ** attempt), max_delay)
                 delay += random.random() * jitter
             time.sleep(delay)
-        except NonRetryableError as e:
+        except NonRetryableError:
             raise
         except Exception as e:
             classified = classify_api_error(e)

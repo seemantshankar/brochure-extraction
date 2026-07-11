@@ -37,3 +37,12 @@ def test_shared_image_viewer_supports_review_mode():
     assert "ImageViewer.create" in script
     assert 'mode === "review"' in script
     assert "ResizeObserver" in script
+
+
+def test_review_template_has_viewer_divider_and_editable_iframe():
+    template = open("crop_app/templates/review.html", encoding="utf-8").read()
+    assert 'id="review-canvas"' in template
+    assert 'id="review-divider"' in template
+    assert 'id="extracted-frame"' in template
+    assert '/static/js/image_viewer.js' in template
+    assert '/static/js/review.js' in template

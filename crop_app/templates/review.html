@@ -2,15 +2,38 @@
 <html>
 <head>
     <title>Review - {{ session_id }}</title>
+    <link rel="stylesheet" href="/static/css/review.css">
 </head>
-<body>
-    <canvas id="review-canvas"></canvas>
-    <script>
-        const config = {
-            "sessionId": "{{ session_id }}",
-            "initialPage": {{ initial_page }},
-            "pages": {{ pages | tojson }}
-        };
-    </script>
+<body class="review-body">
+    <main class="review-workspace">
+        <nav id="review-thumbnails" aria-label="Brochure pages"></nav>
+        <div id="review-split" class="review-split">
+            <section class="review-source">
+                <div class="review-toolbar">
+                    <strong id="review-source-label">Source</strong>
+                    <div class="zoom-controls">
+                        <button id="review-zoom-out" type="button" aria-label="Zoom out">&minus;</button>
+                        <span id="review-zoom-level">100%</span>
+                        <button id="review-zoom-in" type="button" aria-label="Zoom in">+</button>
+                        <button id="review-reset" type="button">Reset</button>
+                    </div>
+                </div>
+                <div id="review-canvas-container">
+                    <canvas id="review-canvas"></canvas>
+                </div>
+            </section>
+            <div id="review-divider" role="separator" tabindex="0"
+                 aria-label="Resize source and extraction panels"
+                 aria-orientation="vertical"
+                 aria-valuemin="25" aria-valuemax="75" aria-valuenow="50"></div>
+            <section class="review-extraction">
+                <div class="review-toolbar">Extracted HTML</div>
+                <iframe id="extracted-frame" title="Editable extracted HTML"></iframe>
+            </section>
+        </div>
+    </main>
+    <script>window.REVIEW_DATA = {{ {"sessionId": session_id, "pages": pages, "initialPage": initial_page}|tojson }};</script>
+    <script src="/static/js/image_viewer.js"></script>
+    <script src="/static/js/review.js"></script>
 </body>
 </html>

@@ -148,6 +148,17 @@ class TestAssembleFullDocument:
         assert 'class="footnote-ref"' in result
 
 
+def test_per_page_html_includes_embedded_mode_and_wrapping_rules():
+    """Per-page HTML includes embedded-review CSS rules and text wrapping."""
+    with tempfile.TemporaryDirectory() as tmp:
+        write_page_files("sid", [{"html": "<p>longword</p>"}], "Title", output_root=tmp)
+        page = open(os.path.join(tmp, "sid", "page-0.html"), encoding="utf-8").read()
+    assert ".embedded-review .page-nav" in page
+    assert "overflow-wrap: anywhere" in page
+    assert "word-break: break-word" in page
+    assert "table-layout: fixed" in page
+
+
 def test_index_page_has_page_grid():
     """The generated index page links to each page."""
     from table_extractor.html_assembler import write_page_files

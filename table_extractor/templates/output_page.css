@@ -108,3 +108,12 @@ li { margin-bottom: 4px; }
   .document-canvas { margin-left: 0; padding: 16px; }
   .page { padding: 24px; }
 }
+
+.embedded-review .page-nav { display: none; }
+.embedded-review .document-canvas { width: auto; margin-left: 0; padding: 16px; overflow: visible; }
+.embedded-review .page { width: 100%; max-width: none; margin: 0; padding: 0; box-shadow: none; border-radius: 0; }
+.embedded-review .page-label { display: none; }
+.page, .page * { min-width: 0; }
+p, li, dd, dt, h1, h2, h3, h4, h5, h6, th, td { overflow-wrap: anywhere; word-break: break-word; }
+.table-scroll-wrap { max-width: 100%; }
+table { table-layout: fixed; }

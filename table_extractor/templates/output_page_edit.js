@@ -1,4 +1,10 @@
 document.addEventListener("DOMContentLoaded", function () {
+  var searchParams = new URLSearchParams(window.location.search);
+  if (searchParams.get("embed") === "1") {
+    document.documentElement.classList.add("embedded-review");
+    document.body.classList.add("embedded-review");
+  }
+
   var EDITABLE_SELECTORS = [
     "td", "th", "li", "h1", "h2", "h3", "h4", "h5", "h6",
     "p", "dd", "dt", "span.field",

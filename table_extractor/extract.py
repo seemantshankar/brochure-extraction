@@ -8,12 +8,15 @@ from PIL import Image
 from openai import OpenAI
 from table_extractor.schemas import Region, ExtractedContent, RegionType
 from table_extractor.cache import cached_call
+from table_extractor.retry import RetryableError
 
 logger = logging.getLogger(__name__)
 
+MAX_EXTRACTION_MAX_TOKENS = 65536
+
 client = OpenAI(
     base_url=os.environ.get("OPENAI_BASE_URL", "https://openrouter.ai/api/v1"),
-    api_key=os.environ.get("OPENROUTER_API_KEY", "mock_key"),
+    api_key=os.environ["OPENROUTER_API_KEY"],
 )
 
 total_extraction_usage = {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0}
@@ -89,7 +92,7 @@ EXTRACTION_SCHEMAS = {
     RegionType.TECHNICAL_DRAWING: {
         "type": "object",
         "properties": {
-            "view": {"type": "string", "enum": ["front", "rear", "side", "top"]},
+            "view": {"type": "string", "enum": ["front", "rear", "side", "top", "plan"]},
             "measurements": {
                 "type": "array",
                 "items": {
@@ -169,6 +172,7 @@ def _call_extraction_api(image_bytes: bytes, region: Region, model: str) -> list
     schema = EXTRACTION_SCHEMAS.get(region.region_type, EXTRACTION_SCHEMAS[RegionType.OTHER])
 
     # Basic single-retry parser loop for robustness
+    max_tokens = 16384
     retries = 2
     last_exc = None
     for attempt in range(retries):
@@ -198,10 +202,24 @@ def _call_extraction_api(image_bytes: bytes, region: Region, model: str) -> list
                     }
                 ],
                 tool_choice={"type": "function", "function": {"name": "return_extracted_content"}},
-                max_tokens=4096
+                max_tokens=max_tokens,
             )
             
             msg = response.choices[0].message
+            finish_reason = getattr(response.choices[0], "finish_reason", None)
+            if finish_reason == "length":
+                logger.warning(
+                    "LLM tool-call output truncated (finish_reason=length) for model=%s, max_tokens=%s",
+                    model,
+                    max_tokens,
+                )
+                max_tokens = min(max_tokens * 2, MAX_EXTRACTION_MAX_TOKENS)
+                raise RetryableError(
+                    f"LLM output truncated (finish_reason=length) at max_tokens={max_tokens}"
+                )
+            
+            logger.info("LLM response finish_reason=%s for model=%s, max_tokens=%s", finish_reason, model, max_tokens)
+            
             if not msg.tool_calls:
                 logger.error(f"Model returned no tool calls. Message content: {msg.content}")
                 raise ValueError(f"Model returned no tool calls. Content: {msg.content}")

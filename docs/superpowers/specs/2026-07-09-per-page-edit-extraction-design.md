@@ -28,9 +28,14 @@ The old `extraction.html` path returns `index.html` as a backward-compat fallbac
 
 ---
 
-## 2. No LLM Prompt Change
+## 2. LLM Prompt / Schema Changes
 
-The existing `_master.txt` prompt is **unchanged**. The LLM continues to output raw HTML fragments as before — no field wrapping, no semantic markup injection. This keeps extraction quality stable and avoids per-brochure prompt tuning.
+The existing `_master.txt` prompt structure is **mostly unchanged** — the LLM continues to output raw HTML fragments. Two targeted extraction-side changes are included:
+
+- The page classification schema now includes a `"plan"` view enum value.
+- Technical-drawing prompts require contextual labels for numeric measurements (e.g. `"Dimension: 120 mm"` instead of bare `"120 mm"`).
+
+These changes keep extraction quality stable while improving downstream readability. No field wrapping or broad semantic markup injection is introduced.
 
 ---
 
@@ -133,7 +138,7 @@ A sticky button in the **bottom-right** corner (z-index above page content):
 
 - **Hidden by default.**
 - A `MutationObserver` watches all editable regions for `input` / `DOMSubtreeModified` events. Any change from `data-original` → button appears with text **"Save Changes"**.
-- Clicking it sends `POST /save-page/<sid>/<page_idx>` with `document.body.innerHTML`.
+- Clicking it sends `POST /save-page/<sid>/<page_idx>` with the full serialized document (`<!DOCTYPE html>` + `document.documentElement.outerHTML`), after stripping injected editing UI (save button, toast, error spans), converting inline `<input>` values back to text nodes, and removing `contenteditable` attributes and `.edited` / `.inline-edit-input` classes.
 - On success → button hides, brief success toast ("Saved") fades out after 2s, `edited` classes are removed, `data-original` values are updated to the saved content.
 - On failure → button stays, error text appears below the button label.
 

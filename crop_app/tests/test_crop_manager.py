@@ -31,19 +31,19 @@ def test_extract_crop_returns_correct_size(manager, sample_page):
 
 
 def test_save_crop_creates_file(manager, sample_page):
-    crop_path = manager.save_crop("test-session", sample_page, [0.25, 0.1, 0.75, 0.7])
+    crop_path = manager.save_crop("test-session", sample_page, [0.25, 0.1, 0.75, 0.7], filename="crop_000.png")
     assert os.path.exists(crop_path)
     assert crop_path.endswith(".png")
 
 
 def test_save_crop_file_is_valid_image(manager, sample_page):
-    crop_path = manager.save_crop("test-session", sample_page, [0.0, 0.0, 1.0, 1.0])
+    crop_path = manager.save_crop("test-session", sample_page, [0.0, 0.0, 1.0, 1.0], filename="crop_001.png")
     img = Image.open(crop_path)
     assert img.size == (200, 300)
 
 
 def test_trim_crop_crops_within_crop(manager, sample_page):
-    full_crop_path = manager.save_crop("test-session", sample_page, [0.0, 0.0, 1.0, 1.0])
+    full_crop_path = manager.save_crop("test-session", sample_page, [0.0, 0.0, 1.0, 1.0], filename="crop_002.png")
     trimmed_path = manager.trim_crop(full_crop_path, [0.25, 0.25, 0.75, 0.75])
     img = Image.open(trimmed_path)
     assert img.size == (100, 150)
@@ -57,9 +57,11 @@ def test_extract_crop_handles_edge_coords(manager, sample_page):
     assert img2.size[0] >= 1 and img2.size[1] >= 1
 
 
-def test_save_crop_increments_filename(manager, sample_page):
-    path1 = manager.save_crop("test-session", sample_page, [0.0, 0.0, 0.5, 0.5])
-    path2 = manager.save_crop("test-session", sample_page, [0.5, 0.5, 1.0, 1.0])
-    assert path1 != path2
-    assert "crop_000" in path1
-    assert "crop_001" in path2
+def test_save_crop_uses_explicit_filename(tmp_path):
+    cm = CropManager(str(tmp_path / "crops"))
+    page = str(tmp_path / "page.png")
+    from PIL import Image
+    Image.new("RGB", (40, 40)).save(page)
+    path = cm.save_crop("s1", page, [0, 0, 1, 1], filename="crop_003.png")
+    assert path.endswith("crop_003.png")
+    assert os.path.exists(path)

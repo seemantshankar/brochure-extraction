@@ -33,11 +33,26 @@ def _fetch_generation_cost(generation_id: str) -> float:
         pass
     return 0.0
 
-# OpenRouter client configuration
-client = OpenAI(
-    base_url=os.environ.get("OPENAI_BASE_URL", "https://openrouter.ai/api/v1"),
-    api_key=os.environ.get("OPENROUTER_API_KEY", "mock_key"),
-)
+# OpenRouter client — initialised lazily so importing this module doesn't
+# raise KeyError when OPENROUTER_API_KEY is absent (e.g. test collection).
+_client = None
+
+
+def _get_client() -> OpenAI:
+    """Return a cached OpenAI client pointing at OpenRouter."""
+    global _client
+    if _client is None:
+        api_key = os.environ.get("OPENROUTER_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "Missing environment variable: OPENROUTER_API_KEY. "
+                "Set it in your .env file before running the pipeline."
+            )
+        _client = OpenAI(
+            base_url=os.environ.get("OPENAI_BASE_URL", "https://openrouter.ai/api/v1"),
+            api_key=api_key,
+        )
+    return _client
 
 DETECTION_TOOL_SCHEMA = {
     "type": "object",
@@ -82,7 +97,7 @@ def _api_call(image_bytes: bytes, model: str, system_prompt: str = None) -> dict
     if system_prompt is None:
         system_prompt = _load_prompt()
 
-    response = client.chat.completions.create(
+    response = _get_client().chat.completions.create(
         model=model,
         messages=[
             {"role": "system", "content": system_prompt},

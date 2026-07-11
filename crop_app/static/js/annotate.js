@@ -8,6 +8,27 @@ document.addEventListener("DOMContentLoaded", () => {
   const zoomLevel = document.getElementById("zoom-level");
 
   const { sessionId, pageData, allPages } = window.APP_DATA;
+
+  // Show analysis status / error badge for the current page
+  (function showAnalysisBadge() {
+    const panel = document.getElementById("analysis-status-badge");
+    if (!panel || !pageData) return;
+    if (pageData.analysis_status === "error") {
+      panel.style.color = "#e94560";
+      panel.style.fontWeight = "600";
+      panel.style.marginBottom = "12px";
+      panel.textContent = "Analysis failed: " + (pageData.analysis_error || "unknown error");
+    } else if (pageData.analysis_status === "pending") {
+      panel.style.color = "var(--text-secondary)";
+      panel.style.marginBottom = "12px";
+      panel.textContent = "Page not yet analyzed.";
+    } else if (pageData.analysis_status === "done") {
+      panel.style.color = "#16a34a";
+      panel.style.fontWeight = "600";
+      panel.style.marginBottom = "12px";
+      panel.textContent = "Analysis: " + (pageData.classification || "—");
+    }
+  })();
   const pageIndex = parseInt(new URLSearchParams(window.location.search).get("page")) || 0;
 
   const ZOOM_LEVELS = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0];

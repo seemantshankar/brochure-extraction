@@ -25,7 +25,7 @@ def reset_usage():
 
 def test_detect_regions_calls_openrouter(mocker):
     # Mock the OpenAI client call
-    mock_client = mocker.patch("table_extractor.detect.client")
+    mock_client = mocker.patch("table_extractor.detect._client")
     
     mock_choice = mocker.MagicMock()
     mock_tool_call = mocker.MagicMock()
@@ -55,7 +55,7 @@ def test_detect_regions_calls_openrouter(mocker):
 
 def test_detect_subregions_recursive(mocker):
     # Mock the OpenAI client call
-    mock_client = mocker.patch("table_extractor.detect.client")
+    mock_client = mocker.patch("table_extractor.detect._client")
     
     # We want to mock 2 calls:
     # 1. Level 1: returns one subregion with may_contain_subregions = True
@@ -130,7 +130,7 @@ def test_detect_subregions_recursive(mocker):
     assert sub_l2.bbox == pytest.approx([121.6, 121.6, 539.2, 539.2])
 
 def test_detect_subregions_respects_max_depth(mocker):
-    mock_client = mocker.patch("table_extractor.detect.client")
+    mock_client = mocker.patch("table_extractor.detect._client")
     
     mock_choice = mocker.MagicMock()
     mock_tool_call = mocker.MagicMock()
@@ -173,7 +173,7 @@ def test_detect_subregions_respects_max_depth(mocker):
 def test_detect_usage_tracking(mocker):
     from table_extractor.detect import get_total_usage, total_detection_usage
     
-    mock_client = mocker.patch("table_extractor.detect.client")
+    mock_client = mocker.patch("table_extractor.detect._client")
     
     mock_choice = mocker.MagicMock()
     mock_tool_call = mocker.MagicMock()
@@ -249,7 +249,7 @@ def test_normalize_bbox_list():
 
 def test_detect_duplicate_subregion_filtering(mocker):
     # Mock OpenAI client
-    mock_client = mocker.patch("table_extractor.detect.client")
+    mock_client = mocker.patch("table_extractor.detect._client")
 
     # Mock response returning a duplicate subregion (covering 81% of crop area, IoU = 0.81)
     mock_choice = mocker.MagicMock()
@@ -287,7 +287,7 @@ def test_detect_duplicate_subregion_filtering(mocker):
 
 def test_refine_region_zoom(mocker):
     # Mock OpenAI client
-    mock_client = mocker.patch("table_extractor.detect.client")
+    mock_client = mocker.patch("table_extractor.detect._client")
 
     # Mock response returning a refined tighter bounding box
     mock_choice = mocker.MagicMock()

@@ -27,23 +27,14 @@ class CropManager:
 
         return img.crop((x0, y0, x1, y1))
 
-    def _next_crop_index(self, session_id: str) -> int:
-        """Find the next available crop index for this session."""
-        crop_dir = os.path.join(self.crop_root, session_id)
-        os.makedirs(crop_dir, exist_ok=True)
-        existing = [f for f in os.listdir(crop_dir) if f.startswith("crop_") and f.endswith(".png")]
-        return len(existing)
-
-    def save_crop(self, session_id: str, page_path: str, normalized_bbox: list) -> str:
-        """Extract a crop and save to crops/<session_id>/crop_NNN.png.
+    def save_crop(self, session_id: str, page_path: str, normalized_bbox: list, filename: str) -> str:
+        """Extract a crop and save to crops/<session_id>/<filename>.
 
         Returns the absolute path to the saved file.
         """
         crop_img = self.extract_crop(page_path, normalized_bbox)
         crop_dir = os.path.join(self.crop_root, session_id)
         os.makedirs(crop_dir, exist_ok=True)
-        idx = self._next_crop_index(session_id)
-        filename = f"crop_{idx:03d}.png"
         filepath = os.path.join(crop_dir, filename)
         crop_img.save(filepath, "PNG")
         return filepath

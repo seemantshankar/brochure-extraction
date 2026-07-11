@@ -1,4 +1,12 @@
-This image shows a technical line drawing with measurement callouts. Extract: view
-("front"/"rear"/"side"/"top", inferred from the drawing), and a list of
-{label, value, unit} for every numeric measurement shown. Return via the provided tool
-call only.
+This image shows a technical line drawing, diagram, or chart with measurement
+callouts, leader lines, axes, or plotted points. A bare number is meaningless
+without context, so for every numeric measurement you MUST supply a "label" that
+describes WHAT the value refers to — infer it from the drawing's visual cues
+(leader lines pointing at a body panel, an overall outline span, a labelled axis,
+a legend entry, a plotted curve, etc.). Examples: "Overall length", "Wheelbase",
+"Ground clearance", "Approach angle", "Fuel economy (city)".
+
+Extract: view ("front"/"rear"/"side"/"top"/"plan", inferred from the drawing),
+and a list of {label, value, unit} for every numeric measurement shown, where
+each label clearly identifies the part, feature, axis, or quantity the value
+points to. Return via the provided tool call only.

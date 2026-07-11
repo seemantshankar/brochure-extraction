@@ -31,10 +31,10 @@ load_env()
 
 from table_extractor import ingest, detect, extract, reconcile, render, snap
 
-# Model selection fallback defaults
-DEFAULT_DETECTION_MODEL = os.environ.get("STRUCTURE_DETECTION_MODEL_ID", "anthropic/claude-sonnet-5")
-DEFAULT_EXTRACTION_MODEL = os.environ.get("PAGE_EXTRATION_MODEL_ID", "anthropic/claude-sonnet-5")
-DEFAULT_VERIFICATION_MODEL = "google/gemini-2.5-pro"
+# Model selection — all loaded from .env; no hardcoded defaults
+DEFAULT_DETECTION_MODEL = os.environ.get("STRUCTURE_DETECTION_MODEL_ID")
+DEFAULT_EXTRACTION_MODEL = os.environ.get("DATA_EXTRACTION_MODEL_ID")
+DEFAULT_VERIFICATION_MODEL = os.environ.get("VERIFICATION_MODEL_ID")
 
 def _flatten(regions: list) -> list:
     flat = []

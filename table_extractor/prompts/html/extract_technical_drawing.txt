@@ -1,1 +1,8 @@
-Type: Technical Drawing / Diagram. Extract all visible measurement labels and their corresponding numeric values with units (mm, cm, degrees, etc.). Render as a <dl> key-value list. Do not reproduce the drawing or diagram itself — capture only the text data (dimension labels, values, units).
+Type: Technical Drawing / Diagram / Chart. These images convey data through callouts, leader lines, axes, and plotted points rather than prose, so a bare list of numbers is meaningless without context.
+
+For every measurement, dimension, callout, or data point you extract, you MUST also capture WHAT it refers to — the contextual label identifying the part, feature, axis, series, or quantity the value is pointing to. Infer this from the drawing's visual cues: leader lines pointing at a body panel, an overall outline span, a labelled axis, a legend entry, a plotted curve, etc. Never emit a value without a descriptive key.
+
+- Measurements / dimensions: render as a <dl> key-value list where each <dt> is the descriptive label (e.g. "Overall length", "Wheelbase", "Ground clearance", "Approach angle") and the corresponding <dd> is the numeric value with its unit (mm, cm, degrees, etc.).
+- Charts / graphs: capture the axis titles, the series/legend labels, and each plotted value together with the category it belongs to, so the data is self-explanatory without seeing the image.
+
+Do not reproduce the drawing or diagram itself — capture only the text data (descriptive labels + values + units), each pair fully contextualised.

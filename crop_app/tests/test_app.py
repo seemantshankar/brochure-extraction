@@ -1,3 +1,4 @@
+"""Tests for the Flask application routes and endpoints."""
 import pytest
 import os
 import sys
@@ -9,6 +10,7 @@ from session_manager import SessionManager
 
 @pytest.fixture
 def client():
+    """Yield a configured test client."""
     app = create_app()
     app.config["TESTING"] = True
     with app.test_client() as client:
@@ -17,6 +19,7 @@ def client():
 
 @pytest.fixture
 def isolated_client(tmp_path):
+    """Yield an app and client pair using temporary directories."""
     app = create_app()
     app.config["TESTING"] = True
     app.config["UPLOAD_DIR"] = str(tmp_path / "uploads")
@@ -28,23 +31,27 @@ def isolated_client(tmp_path):
 
 
 def test_health_returns_200(client):
+    """Health endpoint returns OK."""
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json == {"status": "ok"}
 
 
 def test_index_returns_200(client):
+    """Root route renders the index page."""
     response = client.get("/")
     assert response.status_code == 200
 
 
 def test_sessions_page_returns_200(client):
+    """Sessions page renders successfully."""
     response = client.get("/sessions")
     assert response.status_code == 200
     assert b"Brochures" in response.data
 
 
 def test_sessions_page_empty_when_no_sessions(isolated_client):
+    """Sessions page shows empty state when no sessions exist."""
     app, client = isolated_client
     response = client.get("/sessions")
     assert response.status_code == 200
@@ -53,6 +60,7 @@ def test_sessions_page_empty_when_no_sessions(isolated_client):
 
 
 def test_sessions_page_lists_existing_sessions(isolated_client):
+    """Sessions page lists uploaded brochure sessions."""
     app, client = isolated_client
     sid = app.session_manager.create_session()
     app.session_manager.save_meta(sid, {
@@ -68,6 +76,7 @@ def test_sessions_page_lists_existing_sessions(isolated_client):
     assert b"1" in resp.data
 
 def test_delete_session_removes_uploads_and_crops(isolated_client):
+    """Deleting a session removes its upload and crop directories."""
     app, client = isolated_client
     sid = app.session_manager.create_session()
     app.session_manager.save_meta(sid, {
@@ -92,6 +101,126 @@ def test_delete_session_removes_uploads_and_crops(isolated_client):
 
 
 def test_delete_missing_session_returns_404(client):
+    """Deleting a nonexistent session returns 404."""
     resp = client.delete('/sessions/does-not-exist')
     assert resp.status_code == 404
+
+
+def test_save_page_endpoint(isolated_client, tmp_path):
+    """Save endpoint overwrites the requested page HTML."""
+    app, client = isolated_client
+
+    # Route writes to app.config["EXTRACTED_DIR"] when set, so keep it hermetic.
+    extracted_dir = tmp_path / "extracted"
+    app.config["EXTRACTED_DIR"] = str(extracted_dir)
+
+    sid = app.session_manager.create_session()
+    app.session_manager.save_meta(sid, {
+        "files": ["brochure.pdf"],
+        "pages": [
+            {"path": "page_000.png", "classification": "Simple", "crops": []}
+        ],
+    })
+
+    session_dir = extracted_dir / sid
+    os.makedirs(session_dir, exist_ok=True)
+    with open(os.path.join(session_dir, "page-0.html"), "w", encoding="utf-8") as f:
+        f.write("<p>original</p>")
+
+    resp = client.post(
+        f"/save-page/{sid}/0",
+        data="<p>edited</p>",
+        content_type="text/html",
+    )
+    assert resp.status_code == 200
+    assert resp.get_json() == {"status": "ok"}
+
+    with open(os.path.join(session_dir, "page-0.html"), "r", encoding="utf-8") as f:
+        assert f.read() == "<p>edited</p>"
+
+
+def test_save_page_endpoint_rejects_empty_body(isolated_client, tmp_path):
+    """Save endpoint rejects empty request bodies."""
+    app, client = isolated_client
+
+    extracted_dir = tmp_path / "extracted"
+    app.config["EXTRACTED_DIR"] = str(extracted_dir)
+
+    sid = app.session_manager.create_session()
+    app.session_manager.save_meta(sid, {
+        "files": ["brochure.pdf"],
+        "pages": [
+            {"path": "page_000.png", "classification": "Simple", "crops": []}
+        ],
+    })
+
+    resp = client.post(
+        f"/save-page/{sid}/0",
+        data="",
+        content_type="text/html",
+    )
+    assert resp.status_code == 400
+    assert resp.get_json() == {"status": "error", "message": "Empty body"}
+
+
+def test_serve_extracted_page_post_out_of_range_returns_400(isolated_client, tmp_path):
+    """POST to a page outside the valid range returns 400."""
+    app, client = isolated_client
+    extracted_dir = tmp_path / "extracted"
+    app.config["EXTRACTED_DIR"] = str(extracted_dir)
+
+    sid = app.session_manager.create_session()
+    app.session_manager.save_meta(sid, {
+        "files": ["brochure.pdf"],
+        "pages": [
+            {"path": "page_000.png", "classification": "Simple", "crops": []}
+        ],
+    })
+
+    session_dir = extracted_dir / sid
+    os.makedirs(session_dir, exist_ok=True)
+
+    resp = client.post(
+        f"/extracted/{sid}/page-999.html",
+        data="<p>edited</p>",
+        content_type="text/html",
+    )
+    assert resp.status_code == 400
+    assert resp.get_json() == {"status": "error", "message": "Invalid page index"}
+    assert not os.path.exists(os.path.join(session_dir, "page-999.html"))
+
+
+def test_path_traversal_and_prefix_bypass(isolated_client, tmp_path):
+    """Endpoints reject paths with traversal or folder prefix bypass."""
+    app, client = isolated_client
+    extracted_dir = tmp_path / "extracted"
+    app.config["EXTRACTED_DIR"] = str(extracted_dir)
+
+    # Mock session_exists to bypass the session check and test path checks
+    app.session_manager.session_exists = lambda sid: True
+    app.session_manager.load_meta = lambda sid: {"pages": [{"path": "page_000.png", "classification": "Simple", "crops": []}]}
+
+    # GET with traversal session_id: path-traversal containment check triggers → 404
+    resp_get = client.get("/extracted/../page-0.html")
+    assert resp_get.status_code == 404
+
+    # POST with traversal session_id: _save_page_html rejects via path guard → 400 or 404
+    resp_post = client.post(
+        "/extracted/../page-0.html",
+        data="<p>hacked</p>",
+        content_type="text/html",
+    )
+    assert resp_post.status_code in (400, 404)
+
+    # save_page endpoint with traversal session_id: _save_page_html path guard → 400
+    with app.test_request_context(
+        "/save-page/../0",
+        method="POST",
+        data="<p>hacked</p>",
+        content_type="text/html",
+    ):
+        resp_save = app.view_functions["save_page"]("..", 0)
+        assert resp_save[1] == 400
+        assert resp_save[0].get_json()["status"] == "error"
+        assert "Invalid session id" in resp_save[0].get_json()["message"]
 
